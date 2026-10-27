@@ -3,6 +3,7 @@ package io.github.sparkcyf.voicesipagent.sip
 import org.junit.Assert.*
 import org.junit.Test
 import java.net.DatagramSocket
+import java.net.BindException
 import java.net.DatagramPacket
 import java.net.InetAddress
 import java.net.UnknownHostException
@@ -106,7 +107,7 @@ class SipShutdownTest {
                 // The local peer deliberately never answers either REGISTER.
                 assertTrue(ua.stop(timeoutMs = 50).isDone)
                 // stop now waits for local release, independently of worker termination.
-                DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                assertUdpPortReleased(port)
                 thread.get().join(2000)
                 assertFalse(thread.get().isAlive)
                 assertFalse(ua.status.ready)
@@ -139,10 +140,25 @@ class SipShutdownTest {
                 assertSame(stopped, ua.stop(timeoutMs = 0))
                 release.countDown()
                 stopped.get(3, TimeUnit.SECONDS)
-                DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                assertUdpPortReleased(port)
             } finally {
                 release.countDown()
                 ua.stop(timeoutMs = 10).get(3, TimeUnit.SECONDS)
+            }
+        }
+    }
+
+    private fun assertUdpPortReleased(port: Int) {
+        // Linux can defer the native descriptor release until the blocked receiver unwinds,
+        // even after DatagramSocket.close() returns. Require release within a bounded window.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (true) {
+            try {
+                DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                return
+            } catch (busy: BindException) {
+                if (System.nanoTime() >= deadline) throw busy
+                Thread.sleep(10)
             }
         }
     }
