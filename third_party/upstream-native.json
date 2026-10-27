@@ -1,0 +1,27 @@
+{
+  "upstream": "https://github.com/sparkcyf/android-voice-sip-agent",
+  "tag": "v0.3.5",
+  "apk_url": "https://github.com/sparkcyf/android-voice-sip-agent/releases/download/v0.3.5/voice-sip-agent-0.3.5.apk",
+  "apk_sha256": "a68b7c6c5506b3a68b14197a6805416464fe99af9aeef50f1b9706facfd61e06",
+  "libraries": {
+    "libpjsua2.so": "f0700e3518fc010ca04c64253d8b0069a60ab73db81cc4ed91abd2cb487a0b84",
+    "libc++_shared.so": "cd61762848882a16c8244c964a6f396c0caa0b440588a210ce9cc4ab0e6d9f0c"
+  },
+  "native_source_archives": [
+    {
+      "name": "pjproject-2.17.tar.gz",
+      "url": "https://github.com/pjsip/pjproject/archive/refs/tags/2.17.tar.gz",
+      "sha256": "065fe06c06788d97c35f563796d59f00ce52fe9558a52d7b490a042a966facce"
+    },
+    {
+      "name": "openssl-3.5.9.tar.gz",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+      "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+    },
+    {
+      "name": "opus-1.6.1.tar.gz",
+      "url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+      "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
+    }
+  ]
+}
