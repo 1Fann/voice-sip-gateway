@@ -1,8 +1,12 @@
 # Voice SIP Gateway
 
+**Latest: 0.3.5-custom.2** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+
+First-run permission onboarding, SIM-account/empty-data diagnostics, accessible Health actions, bounded Shizuku binding retries and assistant recovery. Existing SIM selection and native audio are retained.
+
 [中文](README.md) · [Download APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [Upstream](https://github.com/sparkcyf/android-voice-sip-agent)
 
-Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.1**, versionCode4. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.2**, versionCode5. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
 
 ## Changes
 

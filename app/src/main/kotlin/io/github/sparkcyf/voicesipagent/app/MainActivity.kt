@@ -58,17 +58,49 @@ import io.github.sparkcyf.voicesipagent.privileged.CallAudioStatus
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 
 class MainActivity : DialerRoleActivity() {
+    private val permissionRequest = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) {
+        GatewayRuntime.get(this).refreshCallAccess()
+    }
+    private fun requestPhonePermissions() {
+        val missing = PhoneAccess.missing(this).toMutableList()
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            missing += android.Manifest.permission.POST_NOTIFICATIONS
+        if (missing.isNotEmpty()) permissionRequest.launch(missing.toTypedArray())
+        else GatewayRuntime.get(this).refreshCallAccess()
+    }
+    private fun openPhonePermissions() {
+        // MIUI's permission editor exposes "blank pass"; always retain the portable fallback.
+        val miui = android.content.Intent("miui.intent.action.APP_PERM_EDITOR")
+            .setPackage("com.miui.securitycenter").putExtra("extra_pkgname", packageName)
+        if (runCatching { startActivity(miui) }.isFailure)
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.parse("package:$packageName")))
+    }
+    private fun openHelper() {
+        val intent = packageManager.getLaunchIntentForPackage("com.fann.voicesiphelper")
+        if (intent != null) startActivity(intent)
+        else android.widget.Toast.makeText(this,"请安装 Voice SIP 助手以准备 Shizuku",android.widget.Toast.LENGTH_LONG).show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val runtime = GatewayRuntime.get(this)
         val editor = ViewModelProvider(this)[SipSettingsDraft::class.java]
         editor.syncSaved(runtime.settings, runtime.pendingSettingsFlow.value)
         GatewayService.start(this)
+        if (!getPreferences(0).getBoolean("permissionsExplained", false)) {
+            getPreferences(0).edit().putBoolean("permissionsExplained", true).apply()
+            android.app.AlertDialog.Builder(this).setTitle("首次使用：允许通话权限")
+                .setMessage("网关需要拨打电话、读取 SIM 信息及音频权限。小米系统请选择允许真实信息，不要选返回空白信息。授权不会自动拨号；SIP 账号请在下方设置。")
+                .setPositiveButton("继续授权") { _, _ -> requestPhonePermissions() }
+                .setNegativeButton("稍后", null).show()
+        }
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 val message by roleMessage.collectAsState()
                 Scaffold { pad -> Screen(runtime, editor, Modifier.padding(pad), ::requestDialer, ::switchDialer,
-                    ::chooseDialerInSettings, ::cancelDialerChange, ::setTakeoverFromUi, message) }
+                    ::chooseDialerInSettings, ::cancelDialerChange, ::setTakeoverFromUi, message,
+                    ::requestPhonePermissions, ::openPhonePermissions, ::openHelper) }
             }
         }
     }
@@ -76,7 +108,7 @@ class MainActivity : DialerRoleActivity() {
 
 @Composable
 private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modifier, requestDialer: () -> Unit, switchDialer: () -> Unit,
-    chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String) {
+    chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String, requestPermissions: () -> Unit, permissionSettings: () -> Unit, openHelper: () -> Unit) {
     val h by rt.health.collectAsState()
     val callAudio by rt.callAudioStatus.collectAsState()
     val directMuteIncompatible by rt.directMuteIncompatible.collectAsState()
@@ -88,8 +120,17 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
     ) {
         Text("Voice SIP 网关", style = MaterialTheme.typography.headlineSmall)
         val cur by rt.settingsFlow.collectAsState()
-        Section("Takeover") {
-            Toggle("Take over calls", cur.takeover, setTakeover) {
+        Section("使用准备 / Setup") {
+            Text(h.phoneAccessProblem ?: "电话权限与 SIM 拨号账户可用")
+            Text("Root、Shizuku 授权需本人确认；仅安装 APK 不会授予系统权限。")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = requestPermissions) { Text("授权 / 重新检查") }
+                OutlinedButton(onClick = permissionSettings) { Text("系统隐私权限") }
+                OutlinedButton(onClick = openHelper) { Text("准备 / 修复 Shizuku") }
+            }
+        }
+        Section("手机通话网关 / Gateway") {
+            Toggle("启用来电转接与 SIM 呼出", cur.takeover, setTakeover) {
                 when {
                     h.takeoverOffPending -> "Turning off after the current call"
                     h.takeoverOnPending -> "Turning on after current calls end"
@@ -162,8 +203,12 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (h.shizuku == ShizukuConnector.State.PERMISSION_REQUIRED || h.shizuku == ShizukuConnector.State.PERMISSION_DENIED) {
-                    Button(onClick = { rt.shizuku.requestPermission() }, enabled = actionsEnabled) { Text("Grant Shizuku") }
+                if (h.shizuku != ShizukuConnector.State.CONNECTED) {
+                    Button(onClick = { rt.shizuku.requestPermission() }, enabled = !h.dialerChangeRunning) { Text("Grant Shizuku / 授权") }
+                    if (!cur.takeover) OutlinedButton(onClick = { setTakeover(true) }) { Text("启用网关并连接") }
+                    if (cur.takeover && h.shizuku == ShizukuConnector.State.ERROR && h.calls.count == 0 && h.session == null) {
+                        OutlinedButton(onClick = { rt.shizuku.retryBinding(); rt.requestBindingRecovery() }) { Text("重试权限连接") }
+                    }
                 }
                 OutlinedButton(onClick = { rt.runSetup() },
                     enabled = actionsEnabled && h.shizuku == ShizukuConnector.State.CONNECTED) { Text("Re-run setup") }

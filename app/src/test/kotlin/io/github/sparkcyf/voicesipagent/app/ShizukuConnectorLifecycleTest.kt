@@ -16,6 +16,28 @@ import org.mockito.Mockito.*
 import rikka.shizuku.Shizuku
 
 class ShizukuConnectorLifecycleTest {
+    @Test fun bindingTimeoutRetriesOnceThenReportsAnActionableFailure() = Fixture().use { f ->
+        f.timeout()
+        assertEquals(2, f.connections.size)
+        f.timeout()
+        assertEquals(ShizukuConnector.State.ERROR, f.connector.state)
+        assertTrue(f.connector.detail.startsWith("binding_timeout"))
+        f.connect(0, -1)
+        assertEquals(ShizukuConnector.State.ERROR, f.connector.state)
+        // The authorized latest request remains available to the compatibility bootstrap.
+        f.connect(1)
+        assertEquals(ShizukuConnector.State.CONNECTED, f.connector.state)
+    }
+
+    @Test fun stopAndSuccessfulConnectionCancelPendingTimeouts() = Fixture().use { f ->
+        f.connect(0)
+        assertEquals(0, f.delayed.size)
+        f.connector.stop()
+        f.connector.start()
+        assertEquals(1, f.delayed.size)
+        f.connector.stop()
+        assertEquals(0, f.delayed.size)
+    }
     @Test fun helperDisconnectRebindsAfterTheSdkFinishesItsCallback() = Fixture().use { f ->
         f.connect(0)
         f.disconnect(0)
@@ -54,6 +76,7 @@ class ShizukuConnectorLifecycleTest {
     private class Fixture : AutoCloseable {
         private val scopes = mutableListOf<AutoCloseable>()
         private val posted = ArrayDeque<Runnable>()
+        val delayed = ArrayDeque<Runnable>()
         val connections = mutableListOf<ServiceConnection>()
         var serverUp = true
         lateinit var received: Shizuku.OnBinderReceivedListener
@@ -65,6 +88,8 @@ class ShizukuConnectorLifecycleTest {
             scopes += mockStatic(Looper::class.java)
             scopes += mockConstruction(Handler::class.java) { handler, _ ->
                 doAnswer { posted.addLast(it.getArgument(0)); true }.`when`(handler).post(any(Runnable::class.java))
+                doAnswer { delayed.addLast(it.getArgument(0)); true }.`when`(handler).postDelayed(any(Runnable::class.java), anyLong())
+                doAnswer { delayed.remove(it.getArgument<Runnable>(0)); null }.`when`(handler).removeCallbacks(any(Runnable::class.java))
             }
             // Prevent Shizuku's static Binder instance from calling Android stub methods.
             scopes += mockConstruction(Class.forName("rikka.shizuku.Shizuku\$1"))
@@ -107,6 +132,7 @@ class ShizukuConnectorLifecycleTest {
         }
         fun disconnect(index: Int) = connections[index].onServiceDisconnected(mock(ComponentName::class.java))
         fun drain() { while (posted.isNotEmpty()) posted.removeFirst().run() }
+        fun timeout() { delayed.removeFirst().run() }
         override fun close() {
             connector.stop()
             scopes.asReversed().forEach { it.close() }

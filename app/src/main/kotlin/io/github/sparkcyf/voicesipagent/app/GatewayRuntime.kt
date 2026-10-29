@@ -72,6 +72,7 @@ data class HealthState(
     val audioReady: Boolean = false,
     val cellularReady: Boolean = false,
     val readinessDetail: String = "Checking gateway setup",
+    val phoneAccessProblem: String? = "正在检查电话权限",
     val calls: CallSnapshot = CallSnapshot(),
     val settingsPending: Boolean = false,
     val dialerChangePending: Boolean = false,
@@ -226,6 +227,8 @@ class GatewayRuntime private constructor(context: Context) {
                 } else {
                     audioOpener.helperDisconnected()
                     updatePrivileged(null, detail)
+                    if (state == ShizukuConnector.State.ERROR && detail.startsWith("binding_timeout") &&
+                        gatewayEnabled && !hasActiveWork()) requestBindingRecovery()
                 }
             }
         }
@@ -233,6 +236,16 @@ class GatewayRuntime private constructor(context: Context) {
         _health.update { it.copy(takeover = settings.takeover) }
         updateReadiness()
         if (!_health.value.takeover) shizuku.stop()
+    }
+
+    private var lastBindingRecovery = 0L
+    fun requestBindingRecovery() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastBindingRecovery != 0L && now - lastBindingRecovery < 120_000) return
+        lastBindingRecovery = now
+        runCatching { app.sendBroadcast(android.content.Intent("com.fann.voicesiphelper.REPAIR_BINDING")
+            .setComponent(android.content.ComponentName("com.fann.voicesiphelper", "com.fann.voicesiphelper.RecoveryReceiver"))) }
+            .onFailure { AppLog.i("Open Voice SIP Assistant to repair the permission service") }
     }
 
     /** Track ownership before promotion so destruction also cancels a failed start. */
@@ -448,7 +461,9 @@ class GatewayRuntime private constructor(context: Context) {
             listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE).all {
                 app.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
             })
-        val access = requirements.ready
+        val phoneProblem = PhoneAccess.problem(app)
+        _health.update { it.copy(phoneAccessProblem = phoneProblem) }
+        val access = requirements.ready && phoneProblem == null
         val audio = when (settings.audioMethod) {
             AudioMethod.OFFICIAL -> p?.get(HealthKeys.REDIRECT_AUDIO) == true
             AudioMethod.LEGACY -> p?.get(HealthKeys.DIRECT_AUDIO) == true
@@ -459,11 +474,11 @@ class GatewayRuntime private constructor(context: Context) {
             !gatewayEnabled -> "Gateway service not running"
             // Without Shizuku, privileged call-access health is unknown; report the root cause.
             h.shizuku != ShizukuConnector.State.CONNECTED -> shizukuProblem(h.shizuku)
-            !access -> requirements.problem!!
+            !access -> phoneProblem ?: requirements.problem!!
             !audio -> "Selected call audio unavailable: ${h.privilegedDetail}"
             else -> null
         }
-        return CellularCheck(access, audio, requirements.problem, problem)
+        return CellularCheck(access, audio, phoneProblem ?: requirements.problem, problem)
     }
 
     // A restarted Shizuku server may not push its binder to this running app until an activity
@@ -1013,6 +1028,7 @@ class GatewayRuntime private constructor(context: Context) {
             (if (h.takeoverOffPending || h.takeoverOnPending) " pending" else "") +
             " sip=${if (h.sip.ready) "ready" else "down"} (${h.sip.detail}) stack=${settings.sipStack.id}" +
             " shizuku=${h.shizuku} audio_method=${settings.audioMethod}:${audioMethodName(settings.audioMethod)}" +
+            " phoneAccess=${if (h.phoneAccessProblem == null) "ready" else "blocked"}" +
             " audioReady=${h.audioReady} tap=${if (audio.active) audio.backend else "idle"}" +
             " earpiece_mute=${onOff(settings.muteEarpiece)} loopback=${onOff(h.loopbackTest)}" +
             " calls=${h.calls.summary}" + (if (h.settingsPending) " settingsPending" else "")

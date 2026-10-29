@@ -32,6 +32,22 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
     private val main = Handler(Looper.getMainLooper())
     private var generation = 0L
     private var connection: ServiceConnection? = null
+    private var bindTimeout: Runnable? = null
+    private var automaticRetries = 0
+    private fun cancelTimeout() { bindTimeout?.let { main.removeCallbacks(it) }; bindTimeout = null }
+    /** Retry only our pending request. Never replace a connected helper or shared server. */
+    @Synchronized fun retryBinding() {
+        if (!started || state == State.CONNECTED) return
+        cancelTimeout()
+        generation++
+        connection?.let { old ->
+            runCatching { Shizuku.unbindUserService(args, old, false) }
+            runCatching { Shizuku.unbindUserService(args, old, true) }
+        }
+        connection = null
+        set(State.ERROR, null, "retrying connection")
+        onBinder()
+    }
 
     private val args = Shizuku.UserServiceArgs(ComponentName(app.packageName, PrivilegedService::class.java.name))
         .daemon(false)
@@ -55,6 +71,7 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
                     set(State.ERROR, null, "unexpected privileged uid $uid")
                     return
                 }
+                automaticRetries = 0
                 set(State.CONNECTED, svc, "uid $uid")
             }
         }
@@ -90,6 +107,7 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
     fun start() {
         if (started) return
         started = true
+        automaticRetries = 0
         generation++
         Shizuku.addBinderDeadListener(binderDead)
         Shizuku.addRequestPermissionResultListener(permissionResult)
@@ -101,6 +119,7 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
     fun stop() {
         if (!started && state == State.STOPPED) return
         started = false
+        cancelTimeout()
         generation++
         Shizuku.removeBinderReceivedListener(binderReceived)
         Shizuku.removeBinderDeadListener(binderDead)
@@ -131,10 +150,9 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
     /** Asks Shizuku for permission (shows Shizuku's dialog). Call from the UI. */
     @Synchronized
     fun requestPermission() {
-        if (!started) return
         try {
             if (!Shizuku.pingBinder()) return set(State.SHIZUKU_NOT_RUNNING, null, "start Shizuku first")
-            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) bind()
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) { if (started) bind() }
             else Shizuku.requestPermission(PERMISSION_REQUEST)
         } catch (e: RuntimeException) {
             set(State.ERROR, null, "permission request failed: ${e.message}")
@@ -162,12 +180,23 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
             val bound = connection(++generation)
             connection = bound
             Shizuku.bindUserService(args, bound)
+            val epoch = generation
+            val timeout = Runnable {
+                synchronized(this) {
+                    if (!started || generation != epoch || state != State.BINDING) return@synchronized
+                    if (automaticRetries++ < 1) retryBinding()
+                    else set(State.ERROR, null, "binding_timeout: open Voice SIP Assistant for compatibility recovery")
+                }
+            }
+            bindTimeout = timeout
+            main.postDelayed(timeout, 15_000)
         } catch (e: RuntimeException) {
             set(State.ERROR, null, "bindUserService failed: ${e.message}")
         }
     }
 
     private fun set(s: State, svc: IPrivilegedService?, why: String) {
+        if (s != State.BINDING) cancelTimeout()
         state = s
         service = svc
         detail = why
