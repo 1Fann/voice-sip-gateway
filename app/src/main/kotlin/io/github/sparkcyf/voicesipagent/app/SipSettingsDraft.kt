@@ -25,7 +25,7 @@ class SipSettingsDraft : ViewModel() {
         get() = port.toIntOrNull()?.takeIf { it in 1..65535 }
 
     val portError: String?
-        get() = if (validatedPort == null) "Enter a port number from 1 to 65535." else null
+        get() = if (validatedPort == null) "请输入 1–65535 之间的端口号。" else null
 
     /** Follow saved or queued changes to untouched fields, while keeping unfinished edits. */
     fun syncSaved(applied: GatewaySettings, pending: GatewaySettings? = null) {
@@ -50,7 +50,7 @@ class SipSettingsDraft : ViewModel() {
         portError != null || !snapshot().hasSameSipSettings(pending ?: applied)
 
     private fun snapshot() = GatewaySettings(
-        server = server, port = requireNotNull(validatedPort) { "PBX port must be between 1 and 65535." },
+        server = server, port = requireNotNull(validatedPort) { "SIP 服务器端口必须为 1–65535。" },
         username = user, password = password, inboundTarget = target, allowedPrefixes = prefixes,
         domain = domain, sipStack = stack, sipTransport = transport.id, srtp = srtp.id,
     )

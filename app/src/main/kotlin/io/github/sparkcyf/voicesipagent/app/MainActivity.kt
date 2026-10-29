@@ -58,8 +58,46 @@ import io.github.sparkcyf.voicesipagent.privileged.CallAudioStatus
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 
 class MainActivity : DialerRoleActivity() {
+    private var backgroundSummary by mutableStateOf("正在检查后台运行权限")
+    private fun refreshBackground() {
+        val restricted = getSystemService(android.app.ActivityManager::class.java).isBackgroundRestricted
+        val exempt = getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        val notifications = getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()
+        backgroundSummary = when {
+            restricted -> "系统限制了后台运行，清后台或息屏后可能断开。请设为不限制。"
+            !exempt -> "尚未允许忽略电池优化，息屏后可能延迟接听。"
+            !notifications -> "通知权限未允许，请点击授权 / 重新检查，允许显示网关状态。"
+            else -> "系统后台运行检查通过；小米自启动权限请在 Voice SIP 助手中核对。"
+        }
+    }
+    private fun backgroundSettings() {
+        android.app.AlertDialog.Builder(this).setTitle("允许持续后台运行")
+            .setMessage("网关需要不限制后台运行、忽略电池优化及小米自启动权限，才能在清后台和息屏后继续接打电话。推荐在 Voice SIP 助手中点击检查 / 允许后台运行；也可以到系统设置手动允许。可能增加耗电，无需锁定最近任务。")
+            .setPositiveButton("打开助手授权") { _, _ -> openHelper() }
+            .setNeutralButton("系统设置") { _, _ ->
+                val power = getSystemService(android.os.PowerManager::class.java)
+                val action = if (power.isIgnoringBatteryOptimizations(packageName))
+                    android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS else
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                runCatching { startActivity(android.content.Intent(action, android.net.Uri.parse("package:$packageName"))) }
+                    .onFailure { openPhonePermissions() }
+            }.setNegativeButton("稍后",null).show()
+    }
+    override fun onResume() {
+        super.onResume()
+        refreshBackground()
+        if (PhoneAccess.missing(this).isEmpty() && !getPreferences(0).getBoolean("backgroundExplained",false)) {
+            getPreferences(0).edit().putBoolean("backgroundExplained",true).apply()
+            backgroundSettings()
+        }
+    }
+
     private val permissionRequest = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) {
         GatewayRuntime.get(this).refreshCallAccess()
+        refreshBackground()
+        if (PhoneAccess.missing(this).isEmpty() && !getPreferences(0).getBoolean("backgroundExplained",false)) {
+            getPreferences(0).edit().putBoolean("backgroundExplained",true).apply(); backgroundSettings()
+        }
     }
     private fun requestPhonePermissions() {
         val missing = PhoneAccess.missing(this).toMutableList()
@@ -100,7 +138,7 @@ class MainActivity : DialerRoleActivity() {
                 val message by roleMessage.collectAsState()
                 Scaffold { pad -> Screen(runtime, editor, Modifier.padding(pad), ::requestDialer, ::switchDialer,
                     ::chooseDialerInSettings, ::cancelDialerChange, ::setTakeoverFromUi, message,
-                    ::requestPhonePermissions, ::openPhonePermissions, ::openHelper) }
+                    ::requestPhonePermissions, ::openPhonePermissions, ::openHelper, backgroundSummary, ::backgroundSettings) }
             }
         }
     }
@@ -108,7 +146,7 @@ class MainActivity : DialerRoleActivity() {
 
 @Composable
 private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modifier, requestDialer: () -> Unit, switchDialer: () -> Unit,
-    chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String, requestPermissions: () -> Unit, permissionSettings: () -> Unit, openHelper: () -> Unit) {
+    chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String, requestPermissions: () -> Unit, permissionSettings: () -> Unit, openHelper: () -> Unit, backgroundSummary: String, backgroundSettings: () -> Unit) {
     val h by rt.health.collectAsState()
     val callAudio by rt.callAudioStatus.collectAsState()
     val directMuteIncompatible by rt.directMuteIncompatible.collectAsState()
@@ -120,7 +158,7 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
     ) {
         Text("Voice SIP 网关", style = MaterialTheme.typography.headlineSmall)
         val cur by rt.settingsFlow.collectAsState()
-        Section("使用准备 / Setup") {
+        Section("使用准备") {
             Text(h.phoneAccessProblem ?: "电话权限与 SIM 拨号账户可用")
             Text("Root、Shizuku 授权需本人确认；仅安装 APK 不会授予系统权限。")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -129,202 +167,207 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
                 OutlinedButton(onClick = openHelper) { Text("准备 / 修复 Shizuku") }
             }
         }
-        Section("手机通话网关 / Gateway") {
+        Section("后台运行准备") {
+            Text(backgroundSummary)
+            OutlinedButton(onClick = backgroundSettings) { Text("检查 / 允许后台运行") }
+        }
+        Section("手机通话网关") {
             Toggle("启用来电转接与 SIM 呼出", cur.takeover, setTakeover) {
                 when {
-                    h.takeoverOffPending -> "Turning off after the current call"
-                    h.takeoverOnPending -> "Turning on after current calls end"
-                    h.dialerChangeRunning -> "Changing the default dialer"
-                    h.dialerChangePending -> if (h.dialerChangeAcquire) "Waiting to become the default dialer" else "Waiting to restore your previous dialer"
-                    cur.takeover -> if (h.cellularReady && !h.loopbackTest) "Ready to bridge calls to the PBX" else h.readinessDetail
-                    h.holdsDialer && cur.keepDefaultDialer -> "Gateway off; this app remains the default phone app"
-                    h.holdsDialer -> "Gateway off; dialer restoration needs attention"
-                    else -> "Gateway off; calls stay with your dialer"
+                    h.takeoverOffPending -> "当前通话结束后关闭"
+                    h.takeoverOnPending -> "当前通话结束后启用"
+                    h.dialerChangeRunning -> "正在切换默认电话应用"
+                    h.dialerChangePending -> if (h.dialerChangeAcquire) "等待设为默认电话应用" else "等待恢复原来的电话应用"
+                    cur.takeover -> if (h.cellularReady && !h.loopbackTest) "已就绪，可通过 SIP 服务器接打电话" else UiChinese.readiness(h)
+                    h.holdsDialer && cur.keepDefaultDialer -> "网关已关闭；此应用仍是默认电话应用"
+                    h.holdsDialer -> "网关已关闭，请检查默认电话应用是否恢复"
+                    else -> "网关已关闭，使用系统电话接打电话"
                 }
             }
             if (h.takeover || h.holdsDialer) {
-                Check("Call access", h.callAccessReady,
+                Check("通话访问方式", h.callAccessReady,
                     if (h.effectiveCallAccess == CallAccess.DIALER) {
-                        if (h.holdsDialer) "This app is the default dialer" else "Default dialer selection required"
-                    } else if (Build.VERSION.SDK_INT == 30) "Alongside-dialer access is unavailable on Android 11"
-                    else "Alongside your current dialer")
+                        if (h.holdsDialer) "此应用已是默认电话应用" else "需要选择默认电话应用"
+                    } else if (Build.VERSION.SDK_INT == 30) "Android 11 不支持与系统电话并用"
+                    else "与现有电话应用并用")
             }
             if (h.holdsDialer || h.effectiveCallAccess == CallAccess.DIALER) {
                 Text(when {
-                    !h.holdsDialer -> "Enable takeover to make this app the default phone app."
-                    cur.keepDefaultDialer -> "This app stays the default when takeover is off."
-                    else -> "Turning takeover off tries to restore your previous phone app."
+                    !h.holdsDialer -> "启用网关后，将此应用设为默认电话应用。"
+                    cur.keepDefaultDialer -> "关闭网关后，此应用仍保留为默认电话应用。"
+                    else -> "关闭网关时，尝试恢复原来的电话应用。"
                 }, style = MaterialTheme.typography.bodySmall)
             }
             if (h.effectiveCallAccess == CallAccess.DIALER && !h.holdsDialer) {
                 if (cur.takeover && !h.dialerChangePending) {
-                    Button(onClick = { setTakeover(true) }, enabled = h.dialerRoleAvailable && !h.dialerChangeRunning) { Text("Enable takeover") }
+                    Button(onClick = { setTakeover(true) }, enabled = h.dialerRoleAvailable && !h.dialerChangeRunning) { Text("启用网关") }
                 }
-                if (!h.dialerRoleAvailable) Text("Default dialer selection is unavailable on this device.")
+                if (!h.dialerRoleAvailable) Text("此设备不支持选择默认电话应用。")
             }
-            if (roleMessage.isNotEmpty()) Text(roleMessage)
+            if (roleMessage.isNotEmpty()) Text(UiChinese.detail(roleMessage))
             if (h.holdsDialer || h.dialerChangeFailed) {
                 if (h.holdsDialer && cur.takeover && h.shizuku == ShizukuConnector.State.CONNECTED) {
-                    OutlinedButton(onClick = switchDialer, enabled = !h.dialerChangeRunning) { Text("Restore previous dialer") }
+                    OutlinedButton(onClick = switchDialer, enabled = !h.dialerChangeRunning) { Text("恢复原来的电话应用") }
                 }
-                OutlinedButton(onClick = chooseDialer, enabled = !h.dialerChangeRunning) { Text("Choose dialer in Settings") }
+                OutlinedButton(onClick = chooseDialer, enabled = !h.dialerChangeRunning) { Text("前往系统设置选择电话应用") }
             }
-            if (h.dialerChangePending) OutlinedButton(onClick = cancelDialer) { Text("Cancel dialer change") }
-            Toggle("Mute call audio on this phone", cur.muteEarpiece, { rt.setMuteEarpiece(it) }) {
+            if (h.dialerChangePending) OutlinedButton(onClick = cancelDialer) { Text("取消切换电话应用") }
+            Toggle("本机通话静音", cur.muteEarpiece, { rt.setMuteEarpiece(it) }) {
                 val unavailable = h.privileged != null &&
                     (h.privileged?.get(HealthKeys.LOCAL_SUPPRESSION) != true || !h.audioReady)
                 if (cur.muteEarpiece && unavailable)
-                    "Playback muting cannot be attempted with the current setup. The phone microphone remains muted during gateway calls. Changes apply to the next call."
+                    "当前配置无法将本机听筒或扬声器静音。网关通话期间仍会关闭本机麦克风。修改从下一通电话生效。"
                 else if (cur.muteEarpiece && directMuteIncompatible)
-                    "Muting stopped direct telephony audio on this phone, so it is skipped when that method is used. Turn this off and on again to retest."
+                    "本机静音曾导致此手机的直接通话音频中断，使用该方式时将跳过静音。关闭此开关再开启，可重新测试。"
                 else
-                    "When enabled, attempts to silence the earpiece or speaker. The phone microphone remains muted during gateway calls. Changes apply to the next call."
+                    "启用后，尝试关闭本机听筒或扬声器声音。网关通话期间仍会关闭本机麦克风。修改从下一通电话生效。"
             }
             if (h.settingsPending && pendingSettings?.hasSameSipSettings(cur) != false) {
-                Text("Changes pending until calls end", style = MaterialTheme.typography.bodySmall)
+                Text("修改将在当前通话结束后生效", style = MaterialTheme.typography.bodySmall)
             }
         }
-        Section("Health") {
+        Section("运行状态") {
             val p = h.privileged
             val actionsEnabled = h.gatewayRunning && cur.takeover && !h.dialerChangeRunning
             Text(when {
-                h.takeover -> h.readinessDetail
-                h.takeoverOnPending -> "Health checks will start after current calls end."
-                else -> "Health checks are paused while takeover is off."
+                h.takeover -> UiChinese.readiness(h)
+                h.takeoverOnPending -> "当前通话结束后开始检查。"
+                else -> "网关关闭期间暂停检查。"
             }, style = MaterialTheme.typography.bodySmall)
             Check("Shizuku", h.shizuku == ShizukuConnector.State.CONNECTED,
-                if (h.takeover) "${h.shizuku} ${h.shizukuDetail}" else "Stopped while takeover is off")
-            Check("Call audio access", h.audioReady)
-            Check("Doze allowlisted", p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
-            Check("SIP registration", h.sip.ready,
-                if (h.takeover) h.sip.detail else "Stopped while takeover is off")
+                if (h.takeover) UiChinese.shizuku(h.shizuku) else "网关关闭期间已停止")
+            Check("通话音频权限", h.audioReady)
+            Check("已加入电池优化白名单", p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
+            Check("SIP 注册", h.sip.ready,
+                if (h.takeover) UiChinese.sip(h.sip.ready, h.sip.detail) else "网关关闭期间已停止")
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (h.shizuku != ShizukuConnector.State.CONNECTED) {
-                    Button(onClick = { rt.shizuku.requestPermission() }, enabled = !h.dialerChangeRunning) { Text("Grant Shizuku / 授权") }
+                    Button(onClick = { rt.shizuku.requestPermission() }, enabled = !h.dialerChangeRunning) { Text("允许 Shizuku 授权") }
                     if (!cur.takeover) OutlinedButton(onClick = { setTakeover(true) }) { Text("启用网关并连接") }
                     if (cur.takeover && h.shizuku == ShizukuConnector.State.ERROR && h.calls.count == 0 && h.session == null) {
                         OutlinedButton(onClick = { rt.shizuku.retryBinding(); rt.requestBindingRecovery() }) { Text("重试权限连接") }
                     }
                 }
                 OutlinedButton(onClick = { rt.runSetup() },
-                    enabled = actionsEnabled && h.shizuku == ShizukuConnector.State.CONNECTED) { Text("Re-run setup") }
+                    enabled = actionsEnabled && h.shizuku == ShizukuConnector.State.CONNECTED) { Text("重新准备通话权限") }
                 OutlinedButton(onClick = { rt.restartSip() },
-                    enabled = actionsEnabled && cur.sipConfigured) { Text("Reconnect SIP") }
+                    enabled = actionsEnabled && cur.sipConfigured) { Text("重新连接 SIP") }
             }
         }
-        Section("Call") {
-            Text(h.calls.summary)
-            Text(h.session ?: "No active session")
+        Section("当前通话") {
+            Text(UiChinese.calls(h.calls))
+            Text(if (h.session == null) "暂无网关通话" else "网关通话正在进行")
             if (callAudio.active) {
-                Text("Current audio method: ${if (callAudio.available) callAudio.backendLabel else "status unavailable"}")
-                Text("Local playback (Android): " + when {
-                    !callAudio.available -> "mute state unavailable"
-                    !callAudio.muteRequested -> "muting not requested"
-                    callAudio.outputMute == CallAudioStatus.APPLIED -> "mute request applied"
-                    callAudio.outputMute == CallAudioStatus.PRESERVED -> "existing mute preserved"
-                    callAudio.outputMute == CallAudioStatus.NOT_APPLIED -> "mute request not applied"
-                    callAudio.outputMute == CallAudioStatus.UNSUPPORTED -> "muting unsupported with this audio method"
-                    else -> "mute state unknown"
+                Text("当前音频方式：${if (callAudio.available) UiChinese.detail(callAudio.backendLabel) else "暂时无法读取状态"}")
+                Text("本机通话声音：" + when {
+                    !callAudio.available -> "无法读取静音状态"
+                    !callAudio.muteRequested -> "未启用本机静音"
+                    callAudio.outputMute == CallAudioStatus.APPLIED -> "已应用静音请求"
+                    callAudio.outputMute == CallAudioStatus.PRESERVED -> "已保留原有静音"
+                    callAudio.outputMute == CallAudioStatus.NOT_APPLIED -> "静音请求未生效"
+                    callAudio.outputMute == CallAudioStatus.UNSUPPORTED -> "当前音频方式不支持静音"
+                    else -> "静音状态未知"
                 })
                 if (callAudio.available && callAudio.recoveryDetail.isNotEmpty()) {
-                    Text("Audio recovered: ${callAudio.recoveryDetail}", style = MaterialTheme.typography.bodySmall)
+                    Text("通话音频已执行恢复，详情见原始诊断日志", style = MaterialTheme.typography.bodySmall)
                 }
-                Text("Next call: playback muting ${if (cur.muteEarpiece) "requested" else "off"}.",
+                Text("下一通电话：${if (cur.muteEarpiece) "启用本机静音" else "不启用本机静音"}",
                     style = MaterialTheme.typography.bodySmall)
             } else if (h.calls.owned > 0 || h.session != null) {
-                Text("Call audio is not open.")
+                Text("通话音频尚未打开。")
             }
             if (callAudio.restorationPending) {
-                Text("Local call playback restoration is unconfirmed. Sound may remain muted.",
+                Text("尚未确认本机通话声音已恢复，听筒或扬声器可能仍处于静音状态。",
                     color = MaterialTheme.colorScheme.error)
                 if (callAudio.ownsOutputChange && h.shizuku == ShizukuConnector.State.CONNECTED) {
                     OutlinedButton(onClick = { rt.retryAudioRestoration() },
                         enabled = !callAudio.active && h.calls.count == 0 && h.session == null) {
-                        Text("Retry restoring playback")
+                        Text("重试恢复本机声音")
                     }
                 } else {
-                    Text("If call sound stays muted, raise the call volume during a normal phone call.",
+                    Text("如果本机通话仍无声，请在正常手机通话中调高通话音量。",
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
-            Toggle("Echo incoming calls (test)", h.loopbackTest, { rt.setLoopbackTest(it) }) {
-                "While the gateway is on, answers incoming cellular calls and echoes the caller's audio instead of connecting the PBX. Changes apply after the current call ends."
+            Toggle("来电回声测试", h.loopbackTest, { rt.setLoopbackTest(it) }) {
+                "网关启用时，接听手机来电并回放对方声音，用于本机测试。测试期间来电不会转到 SIP 服务器。修改在当前通话结束后生效。"
             }
             if (h.loopbackTest) {
-                Text("Echo test enabled", style = MaterialTheme.typography.titleSmall)
-                Button(onClick = { rt.setLoopbackTest(false) }) { Text("Disable echo test") }
+                Text("回声测试已启用", style = MaterialTheme.typography.titleSmall)
+                Button(onClick = { rt.setLoopbackTest(false) }) { Text("关闭回声测试") }
             }
         }
         SettingsSection(rt, editor)
         var advanced by rememberSaveable { mutableStateOf(false) }
-        OutlinedButton(onClick = { advanced = !advanced }) { Text(if (advanced) "Hide advanced settings" else "Advanced settings") }
+        OutlinedButton(onClick = { advanced = !advanced }) { Text(if (advanced) "收起高级设置" else "高级设置") }
         if (advanced) {
-            Section("Platform integration") {
+            Section("系统与音频设置") {
                 val preferredCallAccess = pendingSettings?.callAccess ?: cur.callAccess
-                Choice("Call access", listOf(CallAccess.AUTO, CallAccess.COMPANION, CallAccess.DIALER), preferredCallAccess,
-                    { when (it) { CallAccess.AUTO -> "Automatic"; CallAccess.COMPANION -> "Alongside dialer"; else -> "Default dialer" } },
+                Choice("通话访问方式", listOf(CallAccess.AUTO, CallAccess.COMPANION, CallAccess.DIALER), preferredCallAccess,
+                    { when (it) { CallAccess.AUTO -> "自动选择"; CallAccess.COMPANION -> "与系统电话并用"; else -> "作为默认电话应用" } },
                     enabled = { it != CallAccess.COMPANION || Build.VERSION.SDK_INT >= 31 }) {
                     rt.applySettings { current -> current.copy(callAccess = it) }
                 }
                 val callAccessHint = when (preferredCallAccess) {
                     CallAccess.AUTO -> if (Build.VERSION.SDK_INT < 31)
-                        "Android 11 requires this app as the default phone app."
-                    else "Works alongside your phone app unless this app is the default."
+                        "Android 11 需要将此应用设为默认电话应用。"
+                    else "通常与系统电话并用；若已设为默认电话，则使用默认电话模式。"
                     CallAccess.COMPANION -> when {
-                        Build.VERSION.SDK_INT < 31 -> "Requires Android 12 or later."
-                        h.holdsDialer -> "Restore your usual phone app to use this mode."
-                        else -> "Keeps your current phone app."
+                        Build.VERSION.SDK_INT < 31 -> "需要 Android 12 或更新版本。"
+                        h.holdsDialer -> "请先恢复常用的电话应用，再使用此模式。"
+                        else -> "保留当前默认电话应用。"
                     }
                     else -> if (h.holdsDialer) null
-                        else "Enable takeover or tap Make default phone app to switch."
+                        else "启用网关，或点击“设为默认电话应用”进行切换。"
                 }
                 if (callAccessHint != null) Text(callAccessHint, style = MaterialTheme.typography.bodySmall)
                 if (preferredCallAccess != cur.callAccess) {
-                    Text("Applies after current calls end.", style = MaterialTheme.typography.bodySmall)
+                    Text("当前通话结束后生效。", style = MaterialTheme.typography.bodySmall)
                 }
                 val dialerControlsEnabled = h.effectiveCallAccess == CallAccess.DIALER && !h.dialerChangeRunning
-                Toggle("Keep this app as the default phone app when gateway is off", cur.keepDefaultDialer,
+                Toggle("关闭网关后仍保留为默认电话应用", cur.keepDefaultDialer,
                     { rt.setKeepDefaultDialer(it) }, enabled = dialerControlsEnabled) {
-                    "When disabled, turning takeover off tries to restore your previous phone app."
+                    "关闭此选项后，停用网关时会尝试恢复原来的电话应用。"
                 }
                 if (!h.holdsDialer && h.dialerRoleAvailable) {
-                    OutlinedButton(onClick = requestDialer, enabled = dialerControlsEnabled) { Text("Make default phone app") }
+                    OutlinedButton(onClick = requestDialer, enabled = dialerControlsEnabled) { Text("设为默认电话应用") }
                 }
-                OutlinedButton(onClick = chooseDialer) { Text("Choose dialer in Settings") }
-                Text("Manual dialer selection leaves takeover unchanged. Selecting Default dialer above applies to the next switch-on.",
+                OutlinedButton(onClick = chooseDialer) { Text("前往系统设置选择电话应用") }
+                Text("手动选择电话应用不会改变网关开关。上方选择默认电话模式后，将在下次启用网关时生效。",
                     style = MaterialTheme.typography.bodySmall)
                 val preferredAudioMethod = pendingSettings?.audioMethod ?: cur.audioMethod
-                Choice("Cellular audio", listOf(AudioMethod.AUTO, AudioMethod.LEGACY, AudioMethod.OFFICIAL), preferredAudioMethod,
-                    { when (it) { AudioMethod.AUTO -> "Automatic"; AudioMethod.LEGACY -> "Direct telephony"; else -> "Cellular redirection" } },
+                Choice("手机通话音频方式", listOf(AudioMethod.AUTO, AudioMethod.LEGACY, AudioMethod.OFFICIAL), preferredAudioMethod,
+                    { when (it) { AudioMethod.AUTO -> "自动选择"; AudioMethod.LEGACY -> "直接读取通话音频"; else -> "系统通话音频重定向" } },
                     enabled = { it != AudioMethod.OFFICIAL || Build.VERSION.SDK_INT >= 33 }) {
                     rt.applySettings { current -> current.copy(audioMethod = it) }
                 }
                 Text(when (preferredAudioMethod) {
-                    AudioMethod.AUTO -> "Prefers cellular call redirection; falls back to direct telephony during setup."
-                    AudioMethod.LEGACY -> "Uses direct cellular audio capture and playback, without redirection fallback."
-                    else -> "Uses cellular call redirection only. Requires Android 13+ and privileged access."
-                } + " Changes apply to the next call.", style = MaterialTheme.typography.bodySmall)
+                    AudioMethod.AUTO -> "优先使用系统音频重定向，准备失败时尝试直接读取通话音频。"
+                    AudioMethod.LEGACY -> "直接采集和播放手机通话音频，不自动切换到重定向方式。"
+                    else -> "仅使用系统通话音频重定向，需要 Android 13 或更新版本及相应权限。"
+                } + " 修改从下一通电话生效。", style = MaterialTheme.typography.bodySmall)
                 if (preferredAudioMethod != cur.audioMethod) {
-                    Text("Applies after current calls end.", style = MaterialTheme.typography.bodySmall)
+                    Text("当前通话结束后生效。", style = MaterialTheme.typography.bodySmall)
                 }
             }
-            Section("Diagnostics") {
+            Section("诊断信息") {
                 Text("Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT}")
-                Text("requestedCallAccess=${cur.callAccess} effective=${h.effectiveCallAccess} audio=${cur.audioMethod}")
-                if (callAudio.backend.isNotEmpty()) Text("Last reported audio method: ${callAudio.backendLabel}")
-                if (callAudio.muteDetail.isNotEmpty()) Text("Playback mute: ${callAudio.muteDetail}")
-                if (callAudio.restoreDetail.isNotEmpty()) Text("Playback restoration: ${callAudio.restoreDetail}")
-                Text(h.privileged?.entries?.joinToString("\n") { "${it.key}=${it.value}" } ?: "Waiting for helper")
-                Text(h.privilegedDetail)
-                Text(h.lastSetupLog)
-                Text("Audio access and frame counters do not verify remote delivery. Verify both directions on this device.")
+                Text("通话访问：设置 ${cur.callAccess}，实际 ${h.effectiveCallAccess}；音频方式 ${cur.audioMethod}")
+                if (callAudio.backend.isNotEmpty()) Text("最近使用的音频方式：${UiChinese.detail(callAudio.backendLabel)}")
+                if (callAudio.muteDetail.isNotEmpty()) Text("本机静音详情：${UiChinese.detail(callAudio.muteDetail)}")
+                if (callAudio.restoreDetail.isNotEmpty()) Text("声音恢复详情：${UiChinese.detail(callAudio.restoreDetail)}")
+                Text(h.privileged?.entries?.joinToString("\n") { "${it.key}=${it.value}" } ?: "等待权限服务连接")
+                Text(UiChinese.detail(h.privilegedDetail))
+                Text("权限准备的原始技术结果：\n" + h.lastSetupLog)
+                Text("音频权限和数据帧计数不能证明对方已收到声音，请实际测试通话双方的声音。")
             }
         }
-        Section("Log") {
+        Section("原始诊断日志") {
+            Text("下方保留协议及系统原始信息，便于排障；号码已脱敏。", style = MaterialTheme.typography.bodySmall)
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
         }
@@ -341,8 +384,8 @@ private fun SettingsSection(rt: GatewayRuntime, editor: SipSettingsDraft) = with
     val unsaved = hasUnsavedChanges(cur, pending)
     val sipPending = pending?.hasSameSipSettings(cur) == false
     val portValidationError = portError
-    Section("Settings") {
-        Choice("SIP stack", SipStack.entries, stack, { it.id }) {
+    Section("SIP 账号设置") {
+        Choice("SIP 实现", SipStack.entries, stack, { if (it == SipStack.BUILTIN) "内置 UDP" else "pjsua2" }) {
             stack = it
             // The built-in stack is UDP only.
             if (it == SipStack.BUILTIN) {
@@ -350,41 +393,41 @@ private fun SettingsSection(rt: GatewayRuntime, editor: SipSettingsDraft) = with
                 transport = SipTransport.UDP
             }
         }
-        Choice("Transport", SipTransport.entries, transport, { it.id }, enabled = { !builtin || it == SipTransport.UDP }) {
+        Choice("传输方式", SipTransport.entries, transport, { it.id }, enabled = { !builtin || it == SipTransport.UDP }) {
             // Follow the default port when it was still the previous transport's default.
             if (port == transport.defaultPort.toString()) port = it.defaultPort.toString()
             transport = it
         }
-        Choice("SRTP (TLS only)", SrtpPolicy.entries, srtp, { it.id }, enabled = { !builtin && transport == SipTransport.TLS }) {
+        Choice("语音加密 SRTP（仅 TLS）", SrtpPolicy.entries, srtp, { when(it) { SrtpPolicy.OFF -> "关闭"; SrtpPolicy.OPTIONAL -> "可选"; else -> "必须加密" } }, enabled = { !builtin && transport == SipTransport.TLS }) {
             srtp = it
         }
-        Field("PBX host", server) { server = it }
-        Field("PBX port", port, KeyboardType.Number, error = portValidationError) { port = it }
-        Field("SIP domain (empty = PBX host)", domain) { domain = it }
-        Field("Extension / user", user) { user = it }
+        Field("SIP 服务器地址", server) { server = it }
+        Field("SIP 服务器端口", port, KeyboardType.Number, error = portValidationError) { port = it }
+        Field("SIP 域名（留空使用服务器地址）", domain) { domain = it }
+        Field("分机号／用户名", user) { user = it }
         OutlinedTextField(
-            value = password, onValueChange = { password = it }, label = { Text("Password") },
+            value = password, onValueChange = { password = it }, label = { Text("密码") },
             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        Field("Cellular inbound -> SIP target (blank = username)", target) { target = it }
-        Field("Allowed dial-out prefixes (comma separated, empty = any)", prefixes) { prefixes = it }
-        if (unsaved) Text("Unsaved changes", style = MaterialTheme.typography.bodySmall,
+        Field("手机来电转接目标（留空使用用户名）", target) { target = it }
+        Field("允许呼出的号码前缀（逗号分隔，留空不限制）", prefixes) { prefixes = it }
+        if (unsaved) Text("有尚未保存的修改", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.primary)
-        if (sipPending) Text("Changes pending until calls end", style = MaterialTheme.typography.bodySmall)
-        Button(onClick = { rt.applySettings(settingsUpdate()) }, enabled = portValidationError == null) { Text("Save & apply") }
+        if (sipPending) Text("修改将在当前通话结束后生效", style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.applySettings(settingsUpdate()) }, enabled = portValidationError == null) { Text("保存并应用") }
         if (health.calls.count > 0 || health.session != null) {
-            if (!sipPending) Text("Saved changes apply after the current call ends.", style = MaterialTheme.typography.bodySmall)
+            if (!sipPending) Text("已保存，当前通话结束后应用修改。", style = MaterialTheme.typography.bodySmall)
         } else if (!cur.takeover) {
-            Text("Saved SIP settings are used when takeover is next enabled.", style = MaterialTheme.typography.bodySmall)
+            Text("SIP 设置已保存，下次启用网关时使用。", style = MaterialTheme.typography.bodySmall)
         }
-        Toggle("Unregister while the phone cannot take calls", cur.holdSipWhenNotReady,
+        Toggle("手机无法接打电话时暂停 SIP 注册", cur.holdSipWhenNotReady,
             { rt.setHoldSipWhenNotReady(it) }) {
-            "At startup, waits for the phone to be ready before registering with the PBX. " +
-                "Later problems get ${GatewayRuntime.SIP_HOLD_GRACE_MS / 1000} s to recover before unregistering so the PBX can fail over. " +
-                "Registration changes wait for calls to end; registers again as soon as the phone is ready."
+            "启动时，等待手机通话功能就绪后再向 SIP 服务器注册。" +
+                "运行中出现故障时，等待 ${GatewayRuntime.SIP_HOLD_GRACE_MS / 1000} 秒恢复；仍未就绪则暂停注册，便于服务器切换线路。" +
+                "注册状态变更会等待当前通话结束；手机恢复就绪后立即重新注册。"
         }
-        Toggle("pjsip debug log", cur.sipDebugLog, { rt.setSipDebugLog(it) }) {
-            "Info-level logs with masked numbers"
+        Toggle("pjsip 调试日志", cur.sipDebugLog, { rt.setSipDebugLog(it) }) {
+            "记录调试信息，日志中的号码会脱敏"
         }
     }
 }

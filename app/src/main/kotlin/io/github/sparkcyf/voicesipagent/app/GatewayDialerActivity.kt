@@ -39,31 +39,31 @@ class GatewayDialerActivity : DialerRoleActivity() {
                     Column(Modifier.fillMaxSize().padding(inset).padding(24.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text("Voice SIP 网关", style = MaterialTheme.typography.headlineSmall)
-                        Text(health.calls.summary)
-                        Text(if (health.session == null) "No gateway session" else "Gateway bridge active")
+                        Text(UiChinese.calls(health.calls))
+                        Text(if (health.session == null) "暂无网关通话" else "正在转接网关通话")
                         // Avoid putting server names or low-level failure details on a locked screen.
                         Text(when {
-                            health.takeoverOffPending -> "Gateway will turn off after current calls end."
-                            health.takeoverOnPending -> "Gateway will turn on after current calls end."
-                            health.dialerChangePending -> "Waiting for current calls to end before changing the dialer."
-                            !health.takeover -> "Gateway is off. Switch to your usual dialer to handle calls."
-                            health.cellularReady -> "Gateway is ready to bridge calls through the PBX."
-                            else -> "Gateway is unavailable. Open configuration or switch to your usual dialer."
+                            health.takeoverOffPending -> "当前通话结束后关闭网关。"
+                            health.takeoverOnPending -> "当前通话结束后启用网关。"
+                            health.dialerChangePending -> "等待当前通话结束后切换电话应用。"
+                            !health.takeover -> "网关已关闭，请使用常用的电话应用接打电话。"
+                            health.cellularReady -> "网关已就绪，可以通过 SIP 服务器接打电话。"
+                            else -> "网关尚未就绪，请打开设置检查，或使用常用的电话应用。"
                         })
                         Button(onClick = { setTakeoverFromUi(!settings.takeover) }, enabled = !health.dialerChangeRunning) {
-                            Text(if (settings.takeover) "Turn takeover off" else "Turn takeover on")
+                            Text(if (settings.takeover) "关闭网关" else "启用网关")
                         }
-                        Text("For manual calls, restore your usual phone app or choose one in system Settings.")
+                        Text("如需直接在手机拨号，请恢复常用的电话应用，或前往系统设置选择。")
                         if (health.holdsDialer && settings.takeover && health.shizuku == ShizukuConnector.State.CONNECTED) {
-                            Button(onClick = ::switchDialer, enabled = !health.dialerChangeRunning) { Text("Restore previous dialer") }
+                            Button(onClick = ::switchDialer, enabled = !health.dialerChangeRunning) { Text("恢复原来的电话应用") }
                         }
-                        OutlinedButton(onClick = ::chooseDialerInSettings, enabled = !health.dialerChangeRunning) { Text("Choose dialer in Settings") }
-                        if (health.dialerChangePending) OutlinedButton(onClick = ::cancelDialerChange) { Text("Cancel dialer change") }
+                        OutlinedButton(onClick = ::chooseDialerInSettings, enabled = !health.dialerChangeRunning) { Text("前往系统设置选择电话应用") }
+                        if (health.dialerChangePending) OutlinedButton(onClick = ::cancelDialerChange) { Text("取消切换电话应用") }
                         if (!health.holdsDialer && health.dialerRoleAvailable) {
-                            OutlinedButton(onClick = { setTakeoverFromUi(true) }, enabled = !health.dialerChangeRunning) { Text("Enable takeover") }
+                            OutlinedButton(onClick = { setTakeoverFromUi(true) }, enabled = !health.dialerChangeRunning) { Text("启用网关") }
                         }
-                        OutlinedButton(onClick = ::openConfiguration) { Text("Open configuration") }
-                        if (message.isNotEmpty()) Text(message)
+                        OutlinedButton(onClick = ::openConfiguration) { Text("打开网关设置") }
+                        if (message.isNotEmpty()) Text(UiChinese.detail(message))
                     }
                 }
             }

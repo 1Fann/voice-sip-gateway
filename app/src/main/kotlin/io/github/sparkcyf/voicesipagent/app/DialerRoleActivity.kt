@@ -18,9 +18,9 @@ abstract class DialerRoleActivity : ComponentActivity() {
     private val roleRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val held = getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_DIALER)
         message(when {
-            held -> "This app is now the default dialer."
-            result.resultCode == RESULT_OK -> "Android did not select this app as default dialer. Use system default-app settings."
-            else -> "Default dialer selection was cancelled or declined."
+            held -> "此应用已设为默认电话应用。"
+            result.resultCode == RESULT_OK -> "系统未将此应用设为默认电话，请前往系统默认应用设置。"
+            else -> "已取消或拒绝切换默认电话应用。"
         })
         GatewayRuntime.get(this).refreshCallAccess()
     }
@@ -43,7 +43,7 @@ abstract class DialerRoleActivity : ComponentActivity() {
         afterUnlock {
             val role = getSystemService(RoleManager::class.java)
             when {
-                !role.isRoleAvailable(RoleManager.ROLE_DIALER) -> message("Default dialer selection is unavailable on this device.")
+                !role.isRoleAvailable(RoleManager.ROLE_DIALER) -> message("此设备不支持选择默认电话应用。")
                 role.isRoleHeld(RoleManager.ROLE_DIALER) -> GatewayRuntime.get(this).refreshCallAccess()
                 GatewayRuntime.get(this).settings.takeover && GatewayRuntime.get(this).shizuku.service != null ->
                     GatewayRuntime.get(this).changeDefaultDialer(true)
@@ -51,7 +51,7 @@ abstract class DialerRoleActivity : ComponentActivity() {
                     val rt = GatewayRuntime.get(this)
                     rt.cancelDialerChange()
                     if (rt.rememberDialerForSystemRequest()) runCatching { roleRequest.launch(role.createRequestRoleIntent(RoleManager.ROLE_DIALER)) }
-                        .onFailure { message("Could not open default dialer selection. Use system default-app settings.") }
+                        .onFailure { message("无法打开默认电话选择界面，请前往系统默认应用设置。") }
                 }
             }
         }
@@ -68,7 +68,7 @@ abstract class DialerRoleActivity : ComponentActivity() {
         GatewayRuntime.get(this).cancelDialerChange()
         val opened = runCatching { startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }.isSuccess
         if (!opened && runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }.isFailure) {
-            message("Open system Settings, then Default apps, and select your usual phone app.")
+            message("请打开系统设置中的“默认应用”，选择常用的电话应用。")
         }
     }
 
@@ -82,8 +82,8 @@ abstract class DialerRoleActivity : ComponentActivity() {
         if (!keyguard.isKeyguardLocked) { action(); return }
         keyguard.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
             override fun onDismissSucceeded() = action()
-            override fun onDismissCancelled() { message("Unlock the phone to continue.") }
-            override fun onDismissError() { message("Unlock the phone to continue.") }
+            override fun onDismissCancelled() { message("请先解锁手机再继续。") }
+            override fun onDismissError() { message("请先解锁手机再继续。") }
         })
     }
 

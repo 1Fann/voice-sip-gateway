@@ -41,14 +41,14 @@ class GatewayDialerService : GatewayInCallService() {
         val nm = getSystemService(NotificationManager::class.java)
         val live = calls.filter { it.telecomState != Call.STATE_DISCONNECTED }
         if (live.isEmpty()) { nm.cancel(ID); return }
-        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Cellular call", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "手机通话", NotificationManager.IMPORTANCE_HIGH))
         val incoming = live.any { it.telecomState == Call.STATE_RINGING }
         val open = PendingIntent.getActivity(this, ID, Intent(this, GatewayDialerActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_gateway)
-            .setContentTitle(if (incoming) "Incoming cellular call" else "Cellular call in progress")
-            .setContentText("Open gateway status or switch dialer for recovery")
+            .setContentTitle(if (incoming) "手机来电" else "正在进行手机通话")
+            .setContentText("点击查看网关状态，或切换电话应用进行恢复")
             .setCategory(Notification.CATEGORY_CALL)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true).setContentIntent(open)

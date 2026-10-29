@@ -79,7 +79,7 @@ class GatewayService : Service() {
 
     private fun promote(health: HealthState) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Gateway status", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "网关运行状态", NotificationManager.IMPORTANCE_LOW))
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIFICATION_ID, build(summary(health)), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
@@ -133,16 +133,14 @@ class GatewayService : Service() {
         }
 
         internal fun summary(h: HealthState): String = when {
-            h.session != null -> "In call · ${h.session}"
-            !h.takeover && h.holdsDialer -> "Takeover off. Still your default phone app; change it in Settings."
-            !h.takeover -> "Call takeover off"
-            h.loopbackTest -> "Loopback test mode"
-            // Shizuku pushes its binder to client apps on uid/activity transitions. A restarted
-            // server may skip a running app, so opening the activity is the reconnect path.
-            h.shizuku == ShizukuConnector.State.SHIZUKU_NOT_RUNNING -> "Shizuku is not running. Start Shizuku, then tap here to reconnect."
-            !h.privilegedReady -> "Setup needed · Shizuku ${h.shizuku.name.lowercase()}"
-            !h.sip.ready -> "SIP: ${h.sip.detail}"
-            else -> "Ready · ${h.sip.detail}"
+            h.session != null -> "正在转接通话"
+            !h.takeover && h.holdsDialer -> "网关已关闭；仍是默认电话应用，可前往系统设置更改"
+            !h.takeover -> "网关已关闭"
+            h.loopbackTest -> "来电回声测试已开启"
+            h.shizuku == ShizukuConnector.State.SHIZUKU_NOT_RUNNING -> "Shizuku 未运行，请在助手中启动后点击此通知重新连接"
+            !h.privilegedReady -> UiChinese.readiness(h)
+            !h.sip.ready -> "SIP：${UiChinese.sip(false, h.sip.detail)}"
+            else -> "已就绪 · ${UiChinese.sip(true, h.sip.detail)}"
         }
 
         /** Used for both explicit launches and runtime switch/role changes. */

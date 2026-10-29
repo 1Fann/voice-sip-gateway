@@ -1,12 +1,24 @@
 # Voice SIP Gateway
 
-**Latest: 0.3.5-custom.2** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+**Latest: 0.3.5-custom.3** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
 
 First-run permission onboarding, SIM-account/empty-data diagnostics, accessible Health actions, bounded Shizuku binding retries and assistant recovery. Existing SIM selection and native audio are retained.
 
 [中文](README.md) · [Download APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [Upstream](https://github.com/sparkcyf/android-voice-sip-agent)
 
-Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.2**, versionCode5. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.3**, versionCode6. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+
+## Update 0.3.5-custom.3
+
+Settings, status, call UI, consent explanations and notifications are now Chinese. Raw protocol/system logs remain in their original technical form. Added background-access guidance and a permission-protected recovery entry point for the helper.
+
+The reproduced failure involved Android background restrictions, disabled MIUI autostart, and a readiness check accepting stale registration without a foreground service. Shortening the full-check interval alone was insufficient.
+
+The assistants now show a background-access setup prompt. After explicit confirmation, Root changes are limited to the assistant and its trusted paired gateway: background execution, battery-optimization exemption, and recognized MIUI autostart. Phone, microphone, notification, and Shizuku consent remain separate. Unsupported settings identify the failed step instead of incorrectly reporting missing Root.
+
+When monitoring is enabled, an approximately 10-second lightweight check detects a missing foreground service. Full checks retain the configured 1–1440-minute interval. Consented background settings may be repaired if restrictions return. Server and gateway recovery retain separate ownership, a shared repair lock, active-call guards and manual-OFF behavior. Recovery is not uninterrupted availability.
+
+The existing Asterisk dedicated-wake option now also controls a renewable, bounded root-monitor wake lease. Disabling it releases the lease. DDNS keeps its separate existing daemon and wake option.
 
 ## Changes
 
