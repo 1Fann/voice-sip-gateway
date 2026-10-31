@@ -1,14 +1,20 @@
 # Voice SIP 网关 / Voice SIP Gateway
 
-**Latest: 0.3.5-custom.3** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+**版本：0.3.5-custom.5** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
 
 首次授权向导，检测 SIM 账户/空白信息；Health 提供明确的启用和授权入口；Shizuku 有界重试及助手恢复。保留默认卡/按次选卡、号码拨出和原生音频功能。
 
 [English](README.en.md) · [下载 APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [上游](https://github.com/sparkcyf/android-voice-sip-agent)
 
-基于官方 Voice SIP Agent **v0.3.5** 的非官方定制版本。当前版本 **0.3.5-custom.3**（versionCode6），新增每通电话指定 SIM。`custom` 表示通用定制，替代原本易产生歧义的 `mtk` 版本后缀；这不是联发科专属音频优化。
+基于官方 Voice SIP Agent **v0.3.5** 的非官方定制版本。当前版本 **0.3.5-custom.5**（versionCode8），支持每通电话指定 SIM。`custom` 表示通用定制，替代原本易产生歧义的 `mtk` 版本后缀；这不是联发科专属音频优化。
 
-## 本次更新 0.3.5-custom.3
+## 本次更新 0.3.5-custom.5
+
+空闲时保留已授权的权限服务，以缩短网关进程意外退出后的重新连接。新进程必须重新登记 Binder/PID，重新检查当前权限、音频能力和 SIP；不缓存就绪结果。客户端在音频打开或资源仍占用时退出，会独立清理并结束该权限进程。手动关闭仍销毁服务，升级会重建旧服务代码。配套助手建议升级至 1.4.6，最低需要 1.4.5 的常驻请求兼容。
+
+AppOps 和电池白名单改为系统实时查询，失败时回退原命令。保留原生音频库、通话路由、账号配置与发布签名；恢复时间需按设备实际观察，不承诺所有故障固定时间恢复。
+
+## 先前更新 0.3.5-custom.3
 
 网关的设置、状态、通话页面、授权说明和通知已完整汉化；原始协议 / 系统日志保留技术原文。新增后台授权提示与系统设置入口，受权限保护的后台恢复入口供助手使用。
 
@@ -33,7 +39,7 @@
 
 ARM64、Android11+，沿用上游 Shizuku 与通话权限机制；当前实际验证包括 Android 13 / Magisk 红米及此前 BakaSU 红米，其他设备尚未实测。目标 ROM 的权限服务兼容入口在 [Voice SIP 助手](https://github.com/1Fann/voice-sip-assistant)，不是在网关的原生音频库中。
 
-包名继续使用 `com.fann.voicesip.dualsim` 以保留已安装用户的覆盖升级、权限和配置；名字仍是“Voice SIP 网关”。从0.3.5-mtk.1更新时保持相同签名，versionCode由3递增为6。与上游官方 App 签名和包名不同，迁移前先关闭旧网关接管，避免两者同时处理电话。不要把账号密码发到公开 issue。
+包名继续使用 `com.fann.voicesip.dualsim` 以保留已安装用户的覆盖升级、权限和配置；名字仍是“Voice SIP 网关”。从0.3.5-mtk.1更新时保持相同签名，versionCode由3递增为8。与上游官方 App 签名和包名不同，迁移前先关闭旧网关接管，避免两者同时处理电话。不要把账号密码发到公开 issue。
 
 “本机通话静音”是上游功能。它与具体设备的通话采集兼容性需实测；本仓库不保证所有手机都能静音且保持双向音频。
 

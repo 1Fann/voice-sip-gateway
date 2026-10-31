@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.SystemClock
@@ -34,6 +35,30 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
     private val audioManager by lazy { ShellEnv.audioManager(shellCtx) }
     private val dialerPlatform by lazy { ShellDialerPlatform(shellCtx, appUid) }
     private val dialerRoles by lazy { DialerRoles(appPackage, dialerPlatform) }
+    private val runtimeGrants = RuntimeGrants(context.packageManager)
+    private val liveSetupChecks by lazy {
+        LiveSetupChecks(context.packageManager,
+            shellCtx.getSystemService(android.app.AppOpsManager::class.java),
+            shellCtx.getSystemService(android.os.PowerManager::class.java))
+    }
+    private val retiringCleanup by lazy {
+        RetiringCleanup(
+            cleanup = {
+                // This thread does not need the service monitor to restore owned output changes.
+                // A stuck open/close is bounded by process retirement, never reused by a new app.
+                runCatching {
+                    synchronized(muteLock) {
+                        muteTapOwner = null
+                        restoreLocal("client disconnected")
+                    }
+                }
+                    .onFailure { Log.w(TAG, "client output restoration failed", it) }
+                closeAudioInternal()
+            },
+            exit = { exitProcess(0) },
+        )
+    }
+    private val clients = ClientLease { retiringCleanup.start() }
 
     /** Never held while taking the service or tap monitors (tap close calls back in). */
     private val muteLock = Any()
@@ -68,20 +93,25 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         Log.i(TAG, "created uid=${Process.myUid()} for $appPackage")
     }
 
-    private fun enforceCaller(pkg: String? = null) {
+    private fun enforceCaller(pkg: String? = null, clientRequired: Boolean = true) {
         val caller = Binder.getCallingUid()
         if (caller != appUid && caller != Process.myUid()) throw SecurityException("caller uid $caller not allowed")
         if (pkg != null && pkg != appPackage) throw SecurityException("package $pkg not allowed")
+        if (clientRequired) clients.requireLive(Binder.getCallingPid())
     }
 
     override fun destroy() {
-        enforceCaller()
+        enforceCaller(clientRequired = false)
         Log.i(TAG, "destroy")
-        closeCallAudio()
-        exitProcess(0)
+        clients.stop()
     }
 
-    override fun getUid(): Int { enforceCaller(); return Process.myUid() }
+    override fun attachClient(client: IBinder) {
+        enforceCaller(clientRequired = false)
+        clients.attach(client, Binder.getCallingPid())
+    }
+
+    override fun getUid(): Int { enforceCaller(clientRequired = false); return Process.myUid() }
 
     override fun dialerState(): Bundle = dialerOperation {
         DialerRoleResult(DialerRoleResult.STATE, "", dialerPlatform.state())
@@ -112,6 +142,12 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
             val r = ShellEnv.run(*cmd)
             log.append(name).append('=').append(if (r.exit == 0) "ok" else "fail(${r.exit}: ${r.out.trim().take(120)})").append('\n')
         }
+        fun grant(permission: String) {
+            val name = permission.substringAfterLast('.')
+            if (!runtimeGrants.ensure(packageName, permission) {
+                step("grant:$name", "pm", "grant", packageName, permission)
+            }) log.append("grant:$name=already granted\n")
+        }
         val companion = Build.VERSION.SDK_INT >= 31 && callAccess != CallAccess.DIALER
         // Reuse observations only until setup attempts to change the corresponding setting.
         var ongoingCallsAllowed: Boolean? = if (companion) appOpAllowed(packageName) else null
@@ -138,7 +174,7 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         // The runtime passes effective takeover, keeping grants enabled until deferred shutdown ends.
         if (takeover) {
             for (perm in PHONE_RUNTIME_PERMISSIONS) {
-                step("grant:${perm.substringAfterLast('.')}", "pm", "grant", packageName, perm)
+                grant(perm)
             }
         }
         if (Build.VERSION.SDK_INT >= 33) {
@@ -149,7 +185,7 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
                     .getOrDefault(false)
             }
             if (needsNotifications) {
-                step("grant:POST_NOTIFICATIONS", "pm", "grant", packageName, "android.permission.POST_NOTIFICATIONS")
+                grant("android.permission.POST_NOTIFICATIONS")
             }
         }
         Log.i(TAG, "setup:\n$log")
@@ -184,10 +220,18 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         return b
     }
 
-    @Synchronized
     override fun openCallAudio(method: Int, sampleRate: Int): ParcelFileDescriptor {
         enforceCaller()
-        closeCallAudio()
+        // Count work before acquiring the service monitor: death must also retire a blocked open.
+        val clientPid = Binder.getCallingPid()
+        return clients.audio(clientPid) { openAudioForClient(method, sampleRate, clientPid) }
+    }
+
+    @Synchronized
+    private fun openAudioForClient(method: Int, sampleRate: Int, clientPid: Int): ParcelFileDescriptor {
+        clients.requireLive(clientPid)
+        closeAudioInternal()
+        clients.requireLive(clientPid)
         synchronized(muteLock) {
             localOutputMute.beginCall(if (directMuteBlocked) "it previously stopped direct capture on this device" else null)
         }
@@ -197,6 +241,7 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         // Register before starting the worker threads so a tap that closes during open cannot later
         // acquire a mute lease. setLocalOutputMuted is serialized with open/close on the service.
         synchronized(muteLock) { muteTapOwner = owner }
+        clients.resourcesHeld(true)
         return try {
             asHelper { t.open() }.also { tap = t; lastBackend = t.usedMethod }
         } catch (e: Throwable) {
@@ -206,9 +251,13 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         }
     }
 
-    @Synchronized
     override fun closeCallAudio() {
         enforceCaller()
+        clients.audio(Binder.getCallingPid()) { closeAudioInternal() }
+    }
+
+    @Synchronized
+    private fun closeAudioInternal() {
         tap?.let {
             it.close()
             lastTapStats = it.stats()
@@ -217,6 +266,9 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         tap = null
         // Also retries a restore that failed in the tap callback, or after an earlier close.
         restoreLocal("tap closed")
+        clients.resourcesHeld(synchronized(muteLock) {
+            localOutputMute.ownsOutputChange || localOutputMute.restorationPending
+        })
     }
 
     override fun audioStats(): String {
@@ -248,10 +300,15 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         }
     }
 
-    @Synchronized
     override fun setLocalOutputMuted(muted: Boolean): String {
         enforceCaller()
-        return asHelper { if (muted) muteLocal() else restoreLocal("requested") }
+        val clientPid = Binder.getCallingPid()
+        return clients.audio(clientPid) {
+            synchronized(this) {
+                clients.requireLive(clientPid)
+                asHelper { if (muted) muteLocal() else restoreLocal("requested") }
+            }
+        }
     }
 
     override fun setDirectOutputMuteBlocked(blocked: Boolean) {
@@ -271,6 +328,7 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
     }
 
     private fun muteFor(usedMethod: String): String {
+        if (!clients.isLive) return "client disconnected"
         // Redirected taps keep working when mode 5 tears down the handset patches. Direct telephony
         // taps need IN_CALL to remain active, so silence only their voice-call output stream.
         return localOutputMute.mute(Build.VERSION.SDK_INT >= 33 && usedMethod.startsWith("redirection"))
@@ -332,8 +390,12 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         return m
     }
 
-    private fun appOpAllowed(pkg: String) =
-        ShellEnv.run("appops", "get", pkg, "MANAGE_ONGOING_CALLS").out.contains("allow")
+    private fun appOpAllowed(pkg: String) = asHelper {
+        liveSetupChecks.ongoingCallsAllowed(pkg) {
+            val result = ShellEnv.run("appops", "get", pkg, "MANAGE_ONGOING_CALLS")
+            result.exit == 0 && result.out.contains("allow")
+        }
+    }
 
     private fun companionOverridden(pkg: String) = companionOverrideCount(pkg) > 0
 
@@ -345,8 +407,12 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         return Regex("[\\s(,]${Regex.escape(pkg)}(?=[,)\\s])").findAll(line).count()
     }
 
-    private fun dozeAllowlisted(pkg: String) =
-        ShellEnv.run("cmd", "deviceidle", "whitelist").out.lineSequence().any { it.trim().endsWith(",$pkg") || it.contains(",$pkg,") }
+    private fun dozeAllowlisted(pkg: String) = asHelper {
+        liveSetupChecks.dozeAllowlisted(pkg) {
+            val result = ShellEnv.run("cmd", "deviceidle", "whitelist")
+            result.exit == 0 && result.out.lineSequence().any { it.trim().endsWith(",$pkg") || it.contains(",$pkg,") }
+        }
+    }
 
     companion object {
         private const val TAG = "VsaPrivileged"

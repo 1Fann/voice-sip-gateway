@@ -1,5 +1,20 @@
 # Changes and validation / 修改与验证
 
+## 0.3.5-custom.5 — live setup checks without command startup
+
+- Warm reconnection queries the target gateway UID's current raw AppOp and the target package's current power allowlist through Android services. Unavailable/failed framework observations fall back to the existing command checks; foreground-only and default AppOps do not count as an unconditional grant.
+- No health result is cached. Telecom companion membership, current audio capabilities, runtime permissions and SIP registration are still checked normally. Client PID/Binder ownership, manual stop, call guards, generation checks and idle-only privileged-service reuse are unchanged.
+- Same package, native libraries and production signing identity; versionCode 8. Intended to reduce work on the warm startup path with the paired assistant's one-second process observation, without promising an exact recovery deadline across devices.
+
+## 0.3.5-custom.4 — idle privileged-service reuse
+
+- An authorized Shizuku UserService survives an unexpected gateway-process exit while idle. A new gateway registers its Binder lifetime and calling PID before CONNECTED, then runs the normal current permission/audio checks and SIP registration. Ordinary service calls must match that process; stale queued calls cannot borrow a new client's lease. No saved readiness result is reused.
+- Client death during audio work, with an open tap, or with owned output changes still pending retires the service instead. New/queued opens and mute requests are rejected; an independent cleanup thread invalidates old tap callbacks, restores owned output changes and closes audio. A two-second exit deadline prevents a blocked native call from retaining an ownerless process. Actual audio methods, call routing and native libraries are unchanged.
+- Explicit stop still removes the UserService. APK update time still versions it so a new install recreates stale service code. This requires the paired assistant's daemon-compatible request handling (1.4.5 or later).
+- If the old client's Binder death notification is late, registration retries against the same service up to five times at 100 ms intervals. Stop/new-generation guards cancel stale retries; exhaustion reports the existing binding-timeout error and requests the paired assistant's bounded recovery.
+- Setup checks each runtime permission for the gateway package and skips a redundant `pm grant` only when the current PackageManager result is granted. Revocations and failed observations still use the existing repair; appops, Telecom, Doze and audio capability checks remain live.
+- Same package and signing identity; versionCode 7. Host tests/build passed. Device recovery timing and real call behavior require separate validation; this build does not claim a measured three-second recovery time.
+
 ## 0.3.5-custom.1
 
 - Neutral version suffix, versionCode4; same package, display name and signing identity as the prior local MTK-named build. No functional dialing/audio change in this version rename.

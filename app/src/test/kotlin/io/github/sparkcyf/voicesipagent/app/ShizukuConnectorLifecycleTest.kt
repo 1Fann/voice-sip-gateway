@@ -6,6 +6,7 @@ import android.content.ServiceConnection
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Handler
+import android.os.Binder
 import android.os.IBinder
 import android.os.Looper
 import io.github.sparkcyf.voicesipagent.privileged.IPrivilegedService
@@ -16,6 +17,42 @@ import org.mockito.Mockito.*
 import rikka.shizuku.Shizuku
 
 class ShizukuConnectorLifecycleTest {
+    @Test fun registersClientLifetimeBeforeReportingConnectedAndDestroysOnManualStop() = Fixture().use { f ->
+        val service = f.connect(0)
+        verify(service).attachClient(any(IBinder::class.java))
+        assertEquals(ShizukuConnector.State.CONNECTED, f.connector.state)
+        f.connector.stop()
+        verify(service).closeCallAudio()
+        assertEquals(1, f.removedHelpers)
+    }
+
+    @Test fun refusesReadinessWhenClientDeathMonitoringCannotBeRegistered() = Fixture().use { f ->
+        f.connect(0, failAttach = true)
+        repeat(5) { f.retryClientRegistration() }
+        assertEquals(ShizukuConnector.State.ERROR, f.connector.state)
+        assertNull(f.connector.service)
+        assertTrue(f.connector.detail.contains("client lifetime registration failed"))
+        assertTrue(f.connector.detail.startsWith("binding_timeout"))
+    }
+
+    @Test fun newClientWaitsBrieflyForOldDeathWithoutDestroyingWarmHelper() = Fixture().use { f ->
+        val service = f.connect(0, failAttach = true)
+        assertEquals(ShizukuConnector.State.BINDING, f.connector.state)
+        doNothing().`when`(service).attachClient(any())
+        f.retryClientRegistration()
+        assertEquals(ShizukuConnector.State.CONNECTED, f.connector.state)
+        assertEquals(0, f.removedHelpers)
+        assertEquals(0, f.delayed.size)
+        verify(service, times(2)).attachClient(any())
+    }
+
+    @Test fun manualStopCancelsQueuedClientRegistrationWithoutReconnecting() = Fixture().use { f ->
+        val service = f.connect(0, failAttach = true)
+        f.connector.stop()
+        f.retryClientRegistration()
+        assertEquals(ShizukuConnector.State.STOPPED, f.connector.state)
+        verify(service, times(1)).attachClient(any())
+    }
     @Test fun bindingTimeoutRetriesOnceThenReportsAnActionableFailure() = Fixture().use { f ->
         f.timeout()
         assertEquals(2, f.connections.size)
@@ -79,11 +116,13 @@ class ShizukuConnectorLifecycleTest {
         val delayed = ArrayDeque<Runnable>()
         val connections = mutableListOf<ServiceConnection>()
         var serverUp = true
+        var removedHelpers = 0
         lateinit var received: Shizuku.OnBinderReceivedListener
         lateinit var died: Shizuku.OnBinderDeadListener
         val connector: ShizukuConnector
 
         init {
+            scopes += mockConstruction(Binder::class.java)
             scopes += mockConstruction(ComponentName::class.java)
             scopes += mockStatic(Looper::class.java)
             scopes += mockConstruction(Handler::class.java) { handler, _ ->
@@ -111,6 +150,10 @@ class ShizukuConnectorLifecycleTest {
                 connections += it.getArgument<ServiceConnection>(1)
                 null
             }
+            shizuku.`when`<Unit> { Shizuku.unbindUserService(any(), any(), eq(true)) }.thenAnswer {
+                removedHelpers++
+                null
+            }
             val context = mock(Context::class.java)
             val pm = mock(PackageManager::class.java)
             `when`(context.applicationContext).thenReturn(context)
@@ -121,18 +164,21 @@ class ShizukuConnectorLifecycleTest {
             connector.start()
         }
 
-        fun connect(index: Int, uid: Int = 2000) {
+        fun connect(index: Int, uid: Int = 2000, failAttach: Boolean = false): IPrivilegedService {
             val service = mock(IPrivilegedService::class.java)
             val binder = mock(IBinder::class.java)
             `when`(service.uid).thenReturn(uid)
             `when`(service.asBinder()).thenReturn(binder)
             `when`(binder.pingBinder()).thenReturn(true)
             `when`(binder.queryLocalInterface(anyString())).thenReturn(service)
+            if (failAttach) doThrow(IllegalStateException("retiring")).`when`(service).attachClient(any())
             connections[index].onServiceConnected(mock(ComponentName::class.java), binder)
+            return service
         }
         fun disconnect(index: Int) = connections[index].onServiceDisconnected(mock(ComponentName::class.java))
         fun drain() { while (posted.isNotEmpty()) posted.removeFirst().run() }
         fun timeout() { delayed.removeFirst().run() }
+        fun retryClientRegistration() { delayed.removeLast().run() }
         override fun close() {
             connector.stop()
             scopes.asReversed().forEach { it.close() }

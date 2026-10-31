@@ -1,0 +1,28 @@
+{
+  "version": "0.3.5-custom.5",
+  "name": "Voice-SIP-Gateway-0.3.5-custom.5.apk",
+  "encoding": "base64",
+  "parts": [
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.001",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.002",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.003",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.004",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.005",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.006",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.007",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.008",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.009",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.010",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.011",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.012",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.013",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.014",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.015",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.016",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.017",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.018",
+    "Voice-SIP-Gateway-0.3.5-custom.5.apk.b64.019"
+  ],
+  "size": 10301936,
+  "sha256": "65718a2f610377813077b14a69585c4e6f3f0b3a2e122ff5c7084459e5a8c323"
+}

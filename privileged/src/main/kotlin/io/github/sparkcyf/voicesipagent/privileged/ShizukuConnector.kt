@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Handler
+import android.os.Binder
 import android.os.IBinder
 import android.os.Looper
 import io.github.sparkcyf.voicesipagent.privileged.shell.PrivilegedService
@@ -34,6 +35,7 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
     private var connection: ServiceConnection? = null
     private var bindTimeout: Runnable? = null
     private var automaticRetries = 0
+    private val client = Binder()
     private fun cancelTimeout() { bindTimeout?.let { main.removeCallbacks(it) }; bindTimeout = null }
     /** Retry only our pending request. Never replace a connected helper or shared server. */
     @Synchronized fun retryBinding() {
@@ -50,7 +52,8 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
     }
 
     private val args = Shizuku.UserServiceArgs(ComponentName(app.packageName, PrivilegedService::class.java.name))
-        .daemon(false)
+        // The service independently watches client death and retains only an idle instance.
+        .daemon(true)
         .processNameSuffix("shell")
         .debuggable(false)
         .tag("vsa-privileged")
@@ -58,6 +61,7 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
         .version((app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime / 1000 % Int.MAX_VALUE).toInt())
 
     private fun connection(epoch: Long) = object : ServiceConnection {
+        private var clientRegistrationRetries = 0
         override fun onServiceConnected(name: ComponentName, binder: IBinder?) {
             synchronized(this@ShizukuConnector) {
                 if (!started || generation != epoch) return
@@ -71,6 +75,25 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
                     set(State.ERROR, null, "unexpected privileged uid $uid")
                     return
                 }
+                try {
+                    svc.attachClient(client)
+                } catch (failure: Exception) {
+                    // A warm helper can observe this new process before the old Binder's death
+                    // callback. Retry this registration briefly, without destroying the helper.
+                    if (clientRegistrationRetries++ < CLIENT_REGISTRATION_RETRIES) {
+                        set(State.BINDING, null, "waiting for previous client cleanup")
+                        main.postDelayed({
+                            synchronized(this@ShizukuConnector) {
+                                if (started && generation == epoch && state == State.BINDING)
+                                    onServiceConnected(name, binder)
+                            }
+                        }, 100)
+                    } else {
+                        set(State.ERROR, null, "binding_timeout: client lifetime registration failed: ${failure.javaClass.simpleName}")
+                    }
+                    return
+                }
+                clientRegistrationRetries = 0
                 automaticRetries = 0
                 set(State.CONNECTED, svc, "uid $uid")
             }
@@ -206,5 +229,6 @@ class ShizukuConnector(context: Context, private val log: (String) -> Unit) {
 
     companion object {
         private const val PERMISSION_REQUEST = 4101
+        private const val CLIENT_REGISTRATION_RETRIES = 5
     }
 }

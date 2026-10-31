@@ -23,4 +23,5 @@ dependencies {
     api(libs.shizuku.api)
     implementation(libs.shizuku.provider)
     testImplementation(libs.junit)
+    testImplementation(libs.mockito.core)
 }

@@ -2,6 +2,7 @@ package io.github.sparkcyf.voicesipagent.privileged;
 
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.IBinder;
 
 /**
  * Runs as the shell user (uid 2000) via Shizuku. Deliberately narrow: no generic command
@@ -63,4 +64,7 @@ interface IPrivilegedService {
      * previously stopped direct capture on this device. Kept for the helper process lifetime.
      */
     void setDirectOutputMuteBlocked(boolean blocked) = 13;
+
+    /** Associates audio resources with a live app process; required before opening audio. */
+    void attachClient(IBinder client) = 14;
 }

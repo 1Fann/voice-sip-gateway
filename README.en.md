@@ -1,14 +1,20 @@
 # Voice SIP Gateway
 
-**Latest: 0.3.5-custom.3** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+**Version: 0.3.5-custom.5** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
 
 First-run permission onboarding, SIM-account/empty-data diagnostics, accessible Health actions, bounded Shizuku binding retries and assistant recovery. Existing SIM selection and native audio are retained.
 
 [中文](README.md) · [Download APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [Upstream](https://github.com/sparkcyf/android-voice-sip-agent)
 
-Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.3**, versionCode6. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.5**, versionCode8. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
 
-## Update 0.3.5-custom.3
+## Update 0.3.5-custom.5
+
+An already authorized idle privileged service survives an unexpected gateway process exit. The replacement process registers its Binder/PID and rechecks current permissions, audio capabilities and SIP. Readiness is never restored from a cache. Client death during audio work or with owned resources triggers independent cleanup and process retirement. Manual stop still destroys the service, and APK updates recreate old service code. Use assistant 1.4.6; daemon-request support requires at least 1.4.5.
+
+Live Android service queries replace command startup for AppOps and the power allowlist, with the existing command fallback on query failure. Native audio libraries, call routing, account settings and the production signature remain unchanged. Recovery timing depends on the device and failure; no universal fixed-time guarantee is made.
+
+## Previous update 0.3.5-custom.3
 
 Settings, status, call UI, consent explanations and notifications are now Chinese. Raw protocol/system logs remain in their original technical form. Added background-access guidance and a permission-protected recovery entry point for the helper.
 
@@ -30,7 +36,7 @@ A PBX may map authenticated1001→SIM1 and1002→SIM2 and add the header; that m
 
 ARM64, Android11+, upstream Shizuku/call permissions. Hardware validation currently covers one rooted MediaTek Redmi. Its ROM-specific bootstrap is in [Voice SIP Assistant](https://github.com/1Fann/voice-sip-assistant), not a native gateway audio modification. Other handsets remain untested.
 
-The package stays `com.fann.voicesip.dualsim` and retains its signing identity so users of0.3.5-mtk.1 can update with settings/permissions retained; versionCode rises3→4. The display name remains Voice SIP 网关. This is a different package/signature from upstream. Disable any old gateway before migration. Never post SIP credentials in issues. Local-output muting compatibility requires actual device audio tests.
+The package stays `com.fann.voicesip.dualsim` and retains its signing identity so users of0.3.5-mtk.1 can update with settings/permissions retained; versionCode rises3→8. The display name remains Voice SIP 网关. This is a different package/signature from upstream. Disable any old gateway before migration. Never post SIP credentials in issues. Local-output muting compatibility requires actual device audio tests.
 
 See [BUILDING.md](BUILDING.md), [CHANGES.md](CHANGES.md), [third-party notices](THIRD_PARTY_NOTICES.md), and the preserved [upstream README](README.upstream.md). Releases include APK, checksums and a source archive. This release reuses the verified upstream v0.3.5 ARM64 native libraries; generated Java JNI sources are included under third_party/pjsua2-java. Original native build scripts and patches remain. Production signing keys are never uploaded.
 
