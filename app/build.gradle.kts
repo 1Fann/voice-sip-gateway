@@ -11,8 +11,8 @@ android {
         applicationId = "com.fann.voicesip.dualsim"
         minSdk = 30
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.3.5-custom.7"
+        versionCode = 11
+        versionName = "0.4.2-custom.1"
         // Filter all transitive JNI libraries as well as PJSIP's own module outputs.
         ndk {
             //abiFilters += listOf("arm64-v8a", "x86_64")
@@ -69,5 +69,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
+    testImplementation(libs.android.json)
     testImplementation(libs.mockito.core)
 }

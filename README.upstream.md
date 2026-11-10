@@ -1,7 +1,5 @@
 # Voice SIP Agent
 
-This checkout is a locally modified unified gateway, installed as **Voice SIP 网关**. It supports both the system default SIM and explicit per-call SIM selection. It is not an official upstream release. See [local changes and validation](DUALSIM.md); the upstream README below is retained for reference.
-
 [中文说明](README.zh.md)
 
 Turn an **unrooted** Android 11+ phone into a single-line **cellular ↔ SIP gateway**. The phone registers to your PBX
@@ -15,7 +13,20 @@ Turn an **unrooted** Android 11+ phone into a single-line **cellular ↔ SIP gat
 
 Privileged operations (call-audio interception, the Telecom companion override, appops) are performed through
 [Shizuku](https://shizuku.rikka.app/) running as the shell user (uid 2000) — **no root required**. This relies on
-hidden platform APIs, which is also why the app is distributed through GitHub Releases rather than Google Play.
+hidden platform APIs, which is why the app won't be available on Google Play.
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/images/takeover-dual-sim.png" width="320" alt="Takeover settings with per-SIM switches"><br>
+      <sub>The takeover switch, per-SIM incoming takeover and the SIM for PBX calls</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/images/bridged-call.png" width="320" alt="Health indicators and an active bridged call"><br>
+      <sub>A cellular call bridged to the PBX, with the phone's own call audio muted</sub>
+    </td>
+  </tr>
+</table>
 
 > [!WARNING]
 > This is a hobby project built on undocumented Android behaviour. It may stop working with any OS update, may
@@ -53,8 +64,8 @@ data only.
 The default pjsua2 SIP stack supports Opus with G.711 fallback. See [audio formats and routing](TECHNICAL.md#audio-formats-and-routing)
 for codec settings and further validation gaps.
 
-Limitations: one call at a time. The APK packages arm64-v8a and targets Android 11+ (minSdk 30).
-Android 11 remains untested. Hidden APIs and modem routing differ across vendors, so other devices
+Limitations: one call at a time. Early media (ringback tone, busy signal, etc.) is unimplemented. The APK packages arm64-v8a and targets Android 11+ (minSdk 30).
+Android 11 remains untested. Hidden APIs and audio HAL routing differ across vendors, so other devices
 may need different audio settings or may not work at all.
 Default-dialer mode provides gateway status and recovery, with a switch-dialer action for manual calling.
 Emergency numbers are always refused and are never dialed through the gateway.
@@ -83,7 +94,7 @@ Emergency numbers are always refused and are never dialed through the gateway.
 
 See [Advanced settings](#advanced-settings) for call-access modes, audio choices, and dialer recovery.
 
-For local listening, turn **Mute call audio on this phone** off in **Advanced settings** before the call.
+For local listening, turn **Mute call audio on this phone** off in **Takeover** before the call.
 Downlink output follows the phone's current call audio route (earpiece, speaker, or headset) and volume.
 The handset microphone stays muted while bridging, so local listening does not enable local speech.
 
@@ -91,10 +102,12 @@ The handset microphone stays muted while bridging, so local listening does not e
 
 | Setting | Meaning |
 |---|---|
-| SIP stack | `pjsua2` (default; UDP/TCP/TLS, SRTP) or `builtin` (pure Kotlin, UDP only) |
+| SIP stack | `pjsua2` (default; UDP/TCP/TLS, SRTP) or `builtin` (pure Kotlin, UDP only; deprecated, new features target pjsua2) |
 | PBX host / port | Registrar / proxy address |
 | Transport | `udp` (LAN), `tcp` or `tls` (pjsua2 only) |
 | SRTP | `off`, `optional` (offer SDES, fall back to RTP) or `mandatory` (488 otherwise); only effective with TLS |
+| Verify TLS certificate | On (default). Off accepts any server certificate; see below |
+| Trusted certificates (TLS) | Android system CAs (default), or imported PEM/DER certificates trusted instead of them |
 | SIP domain | Defaults to the PBX host |
 | User / password | Trunk credentials on the PBX |
 | Cellular inbound → SIP target | DID dialed on the PBX for incoming cellular calls; blank = the SIP user name |
@@ -104,11 +117,93 @@ The handset microphone stays muted while bridging, so local listening does not e
 Tap **Save & apply**; changes wait for current calls to end. With takeover off, saved SIP settings are
 used when takeover is next enabled.
 
-TLS validates the server certificate chain and host name against the Android system CA store (TLS 1.2/1.3 only)
-and accepts `*.` wildcard certificates in the left-most label (RFC 6125). There is no downgrade: if TLS fails,
-registration fails and is retried every 30 s.
+TLS validates the server certificate chain, validity period and host name against the Android system CA store
+(TLS 1.2/1.3 only) and accepts `*.` wildcard certificates in the left-most label (RFC 6125). There is no downgrade:
+if TLS fails, registration fails and is retried every 30 s. Two options cover private PBXs (pjsua2 only):
+
+- **Import certificate** trusts only the imported certificates instead of the system CAs: your private CA, or
+  the PBX's own self-signed certificate, which then works as a pin. The chain, validity period and host name are
+  still checked, so the certificate must name the host you enter as **PBX host** (DNS name or IP address in the
+  subject alternative name). The app lists each certificate with its expiry and SHA-256 fingerprint; compare it
+  with `openssl x509 -noout -fingerprint -sha256 -in <file>` on the PBX. **Use system CAs** removes them.
+- **Verify TLS certificate** off accepts any certificate: expired, self-signed or issued for another name.
+  Anyone who can intercept the connection can then impersonate the PBX and read or change SIP signalling,
+  including the SRTP keys. Use it only for testing or on a network you trust.
+
+### Configuration file
+
+**Configuration file → Export to file** saves every setting as JSON, except the **Take over calls** switch.
+**Import from file** lists the settings that would change and applies them after you confirm. Only keys
+present in the file are changed, so a file can hold just the SIP account, for example. Like **Save & apply**,
+imported changes wait for current calls to end. Import never turns takeover on or off.
+
+> [!WARNING]
+> The exported file contains the SIP password in plain text. Keep it private.
+
+```json
+{
+  "format": "voice-sip-agent-config",
+  "version": 1,
+  "exportedBy": "Voice SIP Agent 0.4.0",
+  "sip": {
+    "stack": "pjsua2",
+    "server": "sip.example.org",
+    "port": 5061,
+    "transport": "tls",
+    "srtp": "optional",
+    "tlsVerify": true,
+    "tlsCa": "",
+    "domain": "sip.example.org",
+    "user": "android-gw",
+    "password": "<secret>",
+    "localPort": 5062,
+    "holdWhenNotReady": true,
+    "debugLog": false
+  },
+  "routing": {
+    "target": "android-gw",
+    "prefixes": ["+1", "00"],
+    "busyPolicy": "reject",
+    "defaultSim": "system",
+    "inboundExcludedSlots": [1]
+  },
+  "device": {
+    "audioMethod": "auto",
+    "callAccess": "auto",
+    "muteEarpiece": true,
+    "keepDefaultDialer": false
+  }
+}
+```
+
+| Key | Values |
+|---|---|
+| `format`, `version` | Required: `"voice-sip-agent-config"` and `1`. `exportedBy` is informational. |
+| `sip.stack` | `pjsua2` or `builtin` |
+| `sip.port`, `sip.localPort` | 1–65535; `localPort` is the built-in stack's local UDP port |
+| `sip.transport` / `sip.srtp` | `udp`, `tcp`, `tls` / `off`, `optional`, `mandatory` |
+| `sip.tlsVerify` | **Verify TLS certificate**; `false` accepts any certificate |
+| `sip.tlsCa` | Trusted certificates as one PEM string (`\n` line breaks); `""` = Android system CAs |
+| `sip.domain` | Empty = the PBX host |
+| `sip.holdWhenNotReady` | **Unregister while the phone cannot take calls** |
+| `sip.debugLog` | **pjsip debug log** |
+| `routing.target` | Cellular inbound → SIP target; empty = the SIP user name |
+| `routing.prefixes` | Allowed dial-out prefixes as an array of strings; `[]` = any number |
+| `routing.busyPolicy` | `reject` or `ignore` (leave incoming cellular calls to the phone while busy) |
+| `routing.defaultSim` | SIM used without `X-VSA-SIMSLOT`: `"system"`, `"refuse"` or a slot number |
+| `routing.inboundExcludedSlots` | SIM slots whose incoming calls are left to the phone app |
+| `device.audioMethod` | `auto`, `redirection` or `direct` (**Cellular audio**) |
+| `device.callAccess` | `auto`, `companion` or `dialer` (**Call access**) |
+| `device.muteEarpiece` | **Mute call audio on this phone** |
+| `device.keepDefaultDialer` | **Keep this app as the default phone app when gateway is off** |
+
+The whole file is checked before anything changes. An unknown key, a wrong type, an out-of-range value or a newer
+`version` rejects the file. The error names the key but never its value. The `device` section depends on the phone
+model and its SIM slots, so review it before importing a file exported on another phone.
 
 ### Gateway status and recovery
+
+<img src="docs/images/health.png" width="360" alt="Health section with every check passing">
 
 Check **Health** for setup or registration errors. With takeover on, use **Re-run setup** after granting
 Shizuku access, or **Reconnect SIP** to retry registration with saved credentials.
@@ -145,12 +240,32 @@ adb shell am broadcast -n $R --es op status            # one-line summary; full 
 adb shell am broadcast -n $R --es op takeover --ez on false
 adb shell am broadcast -n $R --es op earpiece-mute --ez on true
 adb shell am broadcast -n $R --es op sip-stack --es stack pjsua2
+adb shell am broadcast -n $R --es op default-sim --es sim system   # SIM without X-VSA-SIMSLOT: system|refuse|<slot>
+adb shell am broadcast -n $R --es op sim-inbound --ei slot 0 --ez on false   # leave SIM 0's incoming calls to the phone
 adb shell am broadcast -n $R --es op loopback --ez on true   # echo incoming cellular calls (test mode)
 adb shell am broadcast -n $R --es op sip-debug --ez on true  # verbose pjsip logging
 adb shell am broadcast -n $R --es op provision --ez hold_sip false   # stay registered while not ready
+adb shell am broadcast -n $R --es op provision --es tls_ca /sdcard/Android/data/io.github.sparkcyf.voicesipagent/files/pbx.pem   # or "system"
+adb shell am broadcast -n $R --es op provision --ez tls_verify false   # accept any TLS certificate (insecure)
 adb shell am broadcast -n $R --es op provision --ei audio_method 2   # 0 Automatic, 1 Call redirection, 2 Direct telephony
 adb logcat -s VoiceSipAgent VsaPrivileged VsaTap
 ```
+
+Use a [configuration file](#configuration-file) to transfer many settings at once. Without `--es path`, export
+and import use `voice-sip-agent-config.json` in the app's external files directory, which adb can read and write:
+
+```bash
+F=/sdcard/Android/data/io.github.sparkcyf.voicesipagent/files/voice-sip-agent-config.json
+adb shell am broadcast -n $R --es op export    # writes $F; the reply never contains the password
+adb pull $F
+adb push voice-sip-agent-config.json $F
+adb shell am broadcast -n $R --es op import    # replies with the number of settings imported
+adb shell am broadcast -n $R --es op import --es path /data/local/tmp/vsa.json   # any absolute path the app can read
+```
+
+With scoped storage, the app cannot read files that adb pushes to shared storage such as `/sdcard/Download`.
+It can write new files there. Paths inside the app's private storage are refused.
+`/data/local/tmp` was readable, but not writable, on a Pixel running Android 17.
 
 Replies use `result=1` for acknowledgement, `2` for errors, and `3` for a five-second timeout.
 Acknowledgement does not guarantee completion; changes may wait until calls end. Check logcat or the
@@ -164,6 +279,12 @@ Phone numbers are logged with only their last two digits; call audio is never lo
 - **The far end cannot hear you, or you hear silence:** set **Cellular audio** to *Direct telephony* and turn
   **Mute call audio on this phone** off (`--ei audio_method 2` and `earpiece-mute --ez on false` over adb). This was the
   only combination that gave two-way audio on the community-tested devices above.
+- **Calls on one SIM drop a few seconds after answering, logging `not in a cellular call: audio mode=3`:** that
+  SIM's calls are handled as VoIP by a carrier app (e.g. Google Fi with Wi-Fi calling on a Pixel), so the call audio
+  never passes through the modem. Turn off Wi-Fi calling for that SIM.
+- **PBX calls without `X-VSA-SIMSLOT` are refused on a dual-SIM phone:** Android has no default SIM for calls
+  ("ask every time"). Pick a SIM in the app, choose one in Android's SIM settings, or send the header from the PBX
+  (see [Dual SIM](#dual-sim)).
 - **Shizuku 13.6.0 on MediaTek / Transsion (e.g. Infinix) phones:** the app's privileged service never
   starts (`NullPointerException` in `LoadedApk.makeApplicationInner`;
   [RikkaApps/Shizuku#1198](https://github.com/RikkaApps/Shizuku/issues/1198)). Install Shizuku 13.5.4 instead.
@@ -174,12 +295,28 @@ Phone numbers are logged with only their last two digits; call audio is never lo
 - **Vendor setup:** Xiaomi, POCO and Redmi need a signed-in Mi account before USB installation and USB debugging
   (security settings) can be enabled, and HyperOS may refuse `pm grant`. Infinix and Redmi may block
   `adb install`; copy the APK to the phone and install it from the file manager. On Samsung, turn off
-  **Auto Blocker**. Turn off automatic system updates: an OS update can break the hidden APIs the gateway uses.
+  **Auto Blocker**. Watch for compatibility changes with major Android version upgrades.
 
 ## Call routing
 
 The gateway joins the PBX as a **trunk**, not an extension; all routing lives in the PBX's inbound/outbound
 routes.
+
+```mermaid
+flowchart TB
+    caller["Cellular network"] <-->|"SIM 0 / SIM 1"| tap
+    subgraph phone["Android phone"]
+        tap["Call audio tap<br/>(Shizuku, uid 2000)"] <--> bridge["Call bridge"] <--> ua["SIP user agent<br/>(pjsua2)"]
+    end
+    ua <-->|"SIP trunk<br/>X-VSA-SIMSLOT, X-VSA-Dial"| pbx["PBX<br/>(Asterisk / FreePBX)"]
+    pbx <--> ext["Extensions, softphones, IVR"]
+```
+
+<p align="center">
+  <img src="docs/images/notification.png" width="360" alt="Phone app and gateway notifications during a bridged call"><br>
+  <sub>During a bridged call the phone app still shows the cellular call (caller number redacted);
+  the gateway's notification shows both legs connected.</sub>
+</p>
 
 - **Cellular inbound**: the phone sends `INVITE sip:<target>@<domain>`, where `target` is a DID (by default the
   trunk's own user name), with the caller number in `P-Asserted-Identity`. An Inbound Route on the PBX sends the
@@ -189,6 +326,23 @@ routes.
   - With a registrar-routing proxy in between (Flexisip etc.), the Request-URI user part must stay the gateway's
     own AoR, otherwise the proxy looks up the number in its registrar and answers 404 — so the number goes in
     `X-VSA-Dial` (see the dial plan below).
+
+### Dual SIM
+
+One trunk serves every SIM; the `X-VSA-SIMSLOT` header names the SIM by Android's **logical slot index**
+(0, 1, … as in `SubscriptionInfo.getSimSlotIndex()`; two eSIM profiles active on one chip are two slots).
+`adb … --es op status` lists them as `sims=0:<carrier>(sub<id>),1:…`.
+
+- **Cellular inbound**: the INVITE carries `X-VSA-SIMSLOT` with the slot the call arrived on; read it in the
+  dial plan with `${PJSIP_HEADER(read,X-VSA-SIMSLOT)}` if the SIMs need different destinations. The app's
+  **Take over incoming calls on SIM n** switches (all on by default) leave a SIM's incoming calls ringing on the
+  phone as usual, e.g. to bridge only a secondary SIM. They do not affect outbound calls.
+- **SIP outbound**: `X-VSA-SIMSLOT` selects the SIM. Without it, the app setting **SIM for PBX calls without
+  X-VSA-SIMSLOT** decides: *System* (default) follows Android's default SIM for calls and refuses the call if
+  Android asks every time; *SIM n* always uses that slot; *Refuse* requires the header. A slot with no active SIM,
+  or a call Telecom places on another SIM, gets `480` (there is no fallback to another SIM); a malformed value gets
+  `400`. The phone never shows Android's SIM picker for gateway calls.
+- Only one call is bridged at a time, whichever SIM it uses.
 
 ### PBX example (FreePBX / IssabelPBX with chan_pjsip)
 
@@ -235,7 +389,17 @@ exten => _X.,n,Hangup(${HANGUPCAUSE})
 
 [vsa-android-gw-hdr]
 exten => s,1,Set(PJSIP_HEADER(add,X-VSA-Dial)=${ARG1})
+exten => s,n,ExecIf($["${ARG2}" != ""]?Set(PJSIP_HEADER(add,X-VSA-SIMSLOT)=${ARG2}))
 exten => s,n,Return()
+
+; Dual SIM: one context per slot (see Dual SIM above)
+[vsa-android-gw-out-sim0]
+exten => _X.,1,Dial(PJSIP/android-gw,,b(vsa-android-gw-hdr^s^1(${EXTEN},0)))
+exten => _X.,n,Hangup(${HANGUPCAUSE})
+
+[vsa-android-gw-out-sim1]
+exten => _X.,1,Dial(PJSIP/android-gw,,b(vsa-android-gw-hdr^s^1(${EXTEN},1)))
+exten => _X.,n,Hangup(${HANGUPCAUSE})
 ```
 
 Web UI:
@@ -244,6 +408,8 @@ Web UI:
   `PJSIP/$OUTNUM$@android-gw` also works).
 - **Outbound Route**: a dedicated prefix (e.g. `9#7#`) with pattern `X.` using that trunk; it must be ordered
   before broader routes such as `9.`.
+- **Dual SIM**: one custom trunk per slot (`Local/$OUTNUM$@vsa-android-gw-out-sim0`, `…-sim1`) and one route
+  prefix per trunk, e.g. `9#7#` → slot 0 and `9#6#` → slot 1.
 - **Inbound Route**: DID `android-gw` → the destination of your choice.
 
 ### Reaching the PBX over the internet: Flexisip
@@ -303,7 +469,8 @@ Copyright (C) 2026 sparkcyf
 
 This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version. See [LICENSE](LICENSE). As a special exception, linking with any library licensed under the Apache License, Version 2.0 is permitted, provided all other code complies with the GPL.
 
-Release APKs statically link pjsip (GPL-2.0-or-later), OpenSSL (Apache-2.0) and libopus (BSD-3-Clause); see
+Release APKs statically link pjsip (GPL-2.0-or-later), OpenSSL (Apache-2.0) and libopus (BSD-3-Clause),
+and bundle Apache 2.0-licensed Java/Kotlin components (AndroidX/Jetpack, Kotlin, kotlinx.coroutines, and Shizuku API/provider); see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The corresponding source for every release is the tagged commit
 of this repository plus the pinned upstream tarballs fetched by `sip-pjsua2/native/build-pjsua2.sh`.
 

@@ -1,8 +1,8 @@
 {
   "upstream": "https://github.com/sparkcyf/android-voice-sip-agent",
-  "tag": "v0.3.5",
-  "apk_url": "https://github.com/sparkcyf/android-voice-sip-agent/releases/download/v0.3.5/voice-sip-agent-0.3.5.apk",
-  "apk_sha256": "a68b7c6c5506b3a68b14197a6805416464fe99af9aeef50f1b9706facfd61e06",
+  "tag": "v0.4.2",
+  "apk_url": "https://github.com/sparkcyf/android-voice-sip-agent/releases/download/v0.4.2/voice-sip-agent-0.4.2.apk",
+  "apk_sha256": "af6fd8002f0ff284f1bf453c343ce43b89016e8a7034b5142e34732dce499993",
   "libraries": {
     "libpjsua2.so": "f0700e3518fc010ca04c64253d8b0069a60ab73db81cc4ed91abd2cb487a0b84",
     "libc++_shared.so": "cd61762848882a16c8244c964a6f396c0caa0b440588a210ce9cc4ab0e6d9f0c"

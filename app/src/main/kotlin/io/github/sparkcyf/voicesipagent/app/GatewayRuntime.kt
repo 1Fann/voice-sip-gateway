@@ -27,11 +27,15 @@ import io.github.sparkcyf.voicesipagent.pjsua2.PjsipEndpoint
 import io.github.sparkcyf.voicesipagent.pjsua2.PjsipLog
 import io.github.sparkcyf.voicesipagent.pjsua2.SipTransport
 import io.github.sparkcyf.voicesipagent.pjsua2.SrtpPolicy
+import io.github.sparkcyf.voicesipagent.pjsua2.TlsCertificates
+import io.github.sparkcyf.voicesipagent.pjsua2.TlsPolicy
 import io.github.sparkcyf.voicesipagent.sip.SipAccount
 import io.github.sparkcyf.voicesipagent.sip.SipConfig
 import io.github.sparkcyf.voicesipagent.sip.SipLog
 import io.github.sparkcyf.voicesipagent.sip.SipUserAgent
 import io.github.sparkcyf.voicesipagent.telephony.CellularEndpoint
+import io.github.sparkcyf.voicesipagent.telephony.DefaultSim
+import io.github.sparkcyf.voicesipagent.telephony.SimSlot
 import io.github.sparkcyf.voicesipagent.telephony.CallSnapshot
 import io.github.sparkcyf.voicesipagent.telephony.GatewayInCallService
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
@@ -79,7 +83,13 @@ data class HealthState(
     val dialerChangeRunning: Boolean = false,
     val dialerChangeFailed: Boolean = false,
     val dialerChangeAcquire: Boolean = false,
+    val sims: List<SimSlot> = emptyList(),
+    /** Slot of Android's default SIM for calls; null when Android asks per call. */
+    val systemSimSlot: Int? = null,
+    /** Set when PBX calls without X-VSA-SIMSLOT cannot be placed with the current outbound default. */
+    val simWarning: String? = null,
 ) {
+
     val privilegedReady: Boolean
         get() = callAccessReady && audioReady && shizuku == ShizukuConnector.State.CONNECTED
 
@@ -136,6 +146,8 @@ class GatewayRuntime private constructor(context: Context) {
     val cellular = CellularEndpoint(app,
         audioOpener,
         logger = { AppLog.i(it) },
+        defaultSlot = { settings.defaultSimSlot },
+        inboundExcluded = { settings.inboundExcludedSlots },
     )
     /** [SipUserAgent] or [PjsipEndpoint], per [GatewaySettings.sipStack]. */
     private var sip: CallEndpoint? = null
@@ -165,6 +177,8 @@ class GatewayRuntime private constructor(context: Context) {
     private var sipHoldCheckAt: Long? = null
     /** Why SIP is currently held unregistered by [startSip]; null while it may register. */
     @Volatile private var sipHeld: String? = null
+    /** Certificate policy of the running pjsua2 library's TLS transport; worker thread only. */
+    private var pjsuaTls: TlsPolicy? = null
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val dialerHandoffStore = DialerHandoffStore(app)
     private val dialerHandoff = DialerHandoff(app.packageName, dialerHandoffStore, object : DialerHandoff.Backend {
@@ -481,6 +495,21 @@ class GatewayRuntime private constructor(context: Context) {
         return CellularCheck(access, audio, phoneProblem ?: requirements.problem, problem)
     }
 
+    private fun simWarning(default: Int, sims: List<SimSlot>, systemSim: Int?): String? = when {
+        default == DefaultSim.SYSTEM && sims.size > 1 && systemSim == null ->
+            "Android has no default SIM for calls, so PBX calls without X-VSA-SIMSLOT are refused. " +
+                "Choose a SIM here or in Android SIM settings."
+        default >= 0 && sims.isNotEmpty() && sims.none { it.slot == default } ->
+            "No active SIM in slot $default: PBX calls without X-VSA-SIMSLOT are refused."
+        else -> null
+    }
+
+    /** Effective outbound default for status output, e.g. "system(1)", "0" or "refuse". */
+    private fun defaultSimLabel(h: HealthState) = DefaultSim.id(settings.defaultSimSlot) +
+        if (settings.defaultSimSlot == DefaultSim.SYSTEM) "(${h.systemSimSlot ?: "ask"})" else ""
+
+    private fun inboundOffLabel(s: GatewaySettings) = s.inboundExcludedSlots.sorted().joinToString(",").ifEmpty { "none" }
+
     // A restarted Shizuku server may not push its binder to this running app until an activity
     // comes to the foreground (see AGENT.md), so tell the user how to reconnect.
     private fun shizukuProblem(state: ShizukuConnector.State) =
@@ -507,8 +536,11 @@ class GatewayRuntime private constructor(context: Context) {
             else -> "Gateway ready"
         }
         val ready = c.problem == null && (h.loopbackTest || h.sip.ready)
+        val sims = cellular.sims.active()
+        val systemSim = cellular.sims.slotOf(cellular.sims.defaultAccount())
         _health.update { it.copy(gatewayRunning = gatewayEnabled, callAccessReady = access,
-            audioReady = audio, cellularReady = ready, readinessDetail = detail) }
+            audioReady = audio, cellularReady = ready, readinessDetail = detail, sims = sims, systemSimSlot = systemSim,
+            simWarning = simWarning(settings.defaultSimSlot, sims, systemSim)) }
         cellular.setReadiness(ready, detail)
         updateSipHold(c.problem)
         syncForegroundService()
@@ -713,6 +745,7 @@ class GatewayRuntime private constructor(context: Context) {
             _health.update { it.copy(sip = EndpointStatus(false, "transport ${s.sipTransport} unsupported by ${s.sipStack.id}")) }
             return
         }
+        if (s.sipStack == SipStack.BUILTIN) AppLog.w("the built-in SIP stack is deprecated; switch to pjsua2")
         try {
             val ep: CallEndpoint = when (s.sipStack) {
                 SipStack.BUILTIN -> SipUserAgent(
@@ -737,6 +770,7 @@ class GatewayRuntime private constructor(context: Context) {
                         port = s.port,
                         transport = transport,
                         srtp = srtp,
+                        tls = tlsPolicy(s).also { if (transport == SipTransport.TLS) pjsuaTls = it },
                         username = s.username,
                         password = s.password,
                         domain = s.domain.ifBlank { s.server },
@@ -772,9 +806,19 @@ class GatewayRuntime private constructor(context: Context) {
         }
     }
 
+    private fun tlsPolicy(s: GatewaySettings) = TlsPolicy(verifyServer = s.tlsVerify, caPem = s.tlsCa.ifEmpty { null })
+
     private fun stopSip(releaseLibrary: Boolean = false) {
         val previous = sip
         sip = null
+        // pjsip keeps TLS connections open after their listener closes and reuses them for new accounts,
+        // so another certificate policy needs a new library; recreating the transport is not enough.
+        val tlsChanged = settings.let { n ->
+            pjsuaTls != null && n.sipStack == SipStack.PJSUA2 && SipTransport.of(n.sipTransport) == SipTransport.TLS &&
+                tlsPolicy(n) != pjsuaTls
+        }
+        if (tlsChanged) AppLog.i("TLS certificate settings changed; restarting pjsua2")
+        val release = releaseLibrary || tlsChanged
         try {
             when (val s = previous) {
                 is SipUserAgent -> trackSipSocketRelease(s.stop())
@@ -782,14 +826,16 @@ class GatewayRuntime private constructor(context: Context) {
                     // Keep the SIP socket only if pjsua2 is about to take it over again.
                     val n = settings
                     s.stop(
-                        releaseTransport = releaseLibrary || !(n.takeover && n.sipStack == SipStack.PJSUA2 &&
+                        releaseTransport = release || !(n.takeover && n.sipStack == SipStack.PJSUA2 &&
                             n.localSipPort == s.config.localPort && SipTransport.of(n.sipTransport) == s.config.transport),
                     )
                 }
             }
         } finally {
-            if (releaseLibrary || !_health.value.takeover || settings.sipStack != SipStack.PJSUA2)
+            if (release || !_health.value.takeover || settings.sipStack != SipStack.PJSUA2) {
                 trackSipSocketRelease(PjsipEndpoint.stopLibrary())
+                pjsuaTls = null
+            }
         }
     }
 
@@ -918,9 +964,15 @@ class GatewayRuntime private constructor(context: Context) {
         settingsStore.save(new)
         _settings.value = new
         AppLog.i("settings saved ($new)")
+        if (new.muteEarpiece != old.muteEarpiece) {
+            // As with the toggle (an imported file can change it): changing the setting retests the device.
+            settingsStore.setDirectMuteIncompatible(false)
+            _directMuteIncompatible.value = false
+        }
         val platformOnly = old.copy(audioMethod = new.audioMethod, callAccess = new.callAccess,
             muteEarpiece = new.muteEarpiece, sipDebugLog = new.sipDebugLog,
-            keepDefaultDialer = new.keepDefaultDialer, holdSipWhenNotReady = new.holdSipWhenNotReady) == new
+            keepDefaultDialer = new.keepDefaultDialer, holdSipWhenNotReady = new.holdSipWhenNotReady,
+            defaultSimSlot = new.defaultSimSlot, inboundExcludedSlots = new.inboundExcludedSlots) == new
         PjsipEndpoint.setVerboseLogging(new.sipDebugLog)
         if (!platformOnly) { startSip(); rebuildBridge() }
         configureCallAccess()
@@ -944,6 +996,24 @@ class GatewayRuntime private constructor(context: Context) {
         settingsStore.setDirectMuteIncompatible(false)
         _directMuteIncompatible.value = false
         AppLog.i("earpiece mute ${if (on) "on" else "off"} (from next call)")
+    }
+
+    /** Outbound SIM for PBX calls without X-VSA-SIMSLOT; read at each placement, so no restart is needed. */
+    fun setDefaultSimSlot(slot: Int) = worker.execute {
+        require(DefaultSim.isValid(slot)) { "invalid default SIM $slot" }
+        settingsStore.save(settings.copy(defaultSimSlot = slot).also { _settings.value = it })
+        pendingSettings = pendingSettings?.copy(defaultSimSlot = slot)
+        AppLog.i("outbound default SIM: ${DefaultSim.id(slot)}")
+        updateReadiness()
+    }
+
+    /** Whether incoming calls on [slot] are bridged; read at each incoming call, so no restart is needed. */
+    fun setSimInbound(slot: Int, on: Boolean) = worker.execute {
+        require(slot >= 0) { "invalid SIM slot $slot" }
+        fun Set<Int>.with() = if (on) this - slot else this + slot
+        settingsStore.save(settings.let { it.copy(inboundExcludedSlots = it.inboundExcludedSlots.with()) }.also { _settings.value = it })
+        pendingSettings = pendingSettings?.let { it.copy(inboundExcludedSlots = it.inboundExcludedSlots.with()) }
+        AppLog.i("incoming calls on SIM $slot ${if (on) "taken over" else "left to the phone app"} (from next call)")
     }
 
     /** Changes the next switch-off, without touching the current call or any queued handoff. */
@@ -1033,22 +1103,33 @@ class GatewayRuntime private constructor(context: Context) {
             " phoneAccess=${if (h.phoneAccessProblem == null) "ready" else "blocked"}" +
             " audioReady=${h.audioReady} tap=${if (audio.active) audio.backend else "idle"}" +
             " earpiece_mute=${onOff(settings.muteEarpiece)} loopback=${onOff(h.loopbackTest)}" +
+            " sims=${h.sims.joinToString(",").ifEmpty { "none" }} default_sim=${defaultSimLabel(h)}" +
+            " inbound_off=${inboundOffLabel(settings)}" +
             " calls=${h.calls.summary}" + (if (h.settingsPending) " settingsPending" else "")
     }
+
+    /** Saved settings including edits queued until calls end, as [settingsLine] reports them. */
+    fun savedSettings(): GatewaySettings = pendingSettings ?: settings
 
     /** Saved or queued selections (not a verified audio route), never the password itself. */
     fun settingsLine(): String {
         val s = pendingSettings ?: settings
         return "stack=${s.sipStack.id} server=${s.server}:${s.port}/${s.sipTransport} srtp=${s.srtp}" +
+            " tls_verify=${onOff(s.tlsVerify)} tls_ca=${tlsCaLabel(s.tlsCa)}" +
             " domain=${s.domain.ifEmpty { "(server)" }} user=${s.username}" +
             " password=${if (s.password.isEmpty()) "unset" else "set"} target=${s.inboundTarget.ifEmpty { "(user)" }}" +
             " prefixes=${s.allowedPrefixes.ifEmpty { "(any)" }}" +
             " audio_method=${s.audioMethod}:${audioMethodName(s.audioMethod)} call_access=${s.callAccess}" +
             " earpiece_mute=${onOff(s.muteEarpiece)} hold_sip=${onOff(s.holdSipWhenNotReady)} sip_debug=${onOff(s.sipDebugLog)}" +
+            " default_sim=${DefaultSim.id(s.defaultSimSlot)} inbound_off=${inboundOffLabel(s)}" +
             (if (pendingSettings != null) " (applies after current calls end)" else "")
     }
 
     private fun onOff(on: Boolean) = if (on) "on" else "off"
+
+    /** No spaces: settingsLine is space-separated key=value pairs. */
+    private fun tlsCaLabel(pem: String) =
+        if (pem.isEmpty()) "system" else "custom:${runCatching { TlsCertificates.certificates(pem).size }.getOrDefault(0)}"
 
     private fun audioMethodName(method: Int) = when (method) {
         AudioMethod.LEGACY -> "direct"
@@ -1065,12 +1146,16 @@ class GatewayRuntime private constructor(context: Context) {
             appendLine("privileged=${h.privileged} ${h.privilegedDetail}")
             appendLine("sip=${h.sip.detail} ready=${h.sip.ready} stack=${settings.sipStack.id} " +
                 "transport=${settings.sipTransport} srtp=${settings.srtp} debugLog=${settings.sipDebugLog}")
+            appendLine("tlsVerify=${settings.tlsVerify} tlsCa=${TlsCertificates.label(settings.tlsCa)}")
             appendLine("sipHoldWhenNotReady=${settings.holdSipWhenNotReady} held=${sipHeld ?: "no"}")
             appendLine("cellular=${cellular.status.detail} inCallServiceBound=${CellularEndpoint.isInCallServiceBound} " +
                 "service=${CellularEndpoint.boundServiceDescription ?: "none"}")
             appendLine("sdk=${Build.VERSION.SDK_INT} callAccess=${settings.callAccess} effective=${h.effectiveCallAccess} " +
                 "defaultDialer=${h.holdsDialer} audioMethod=${settings.audioMethod} audioReady=${h.audioReady}")
             appendLine("dialerChangePending=${h.dialerChangePending} running=${h.dialerChangeRunning} ${_dialerMessage.value}")
+            appendLine("sims=${h.sims.joinToString(",").ifEmpty { "none" }} defaultSim=${defaultSimLabel(h)}" +
+                " inboundOff=${inboundOffLabel(settings)}" +
+                (h.simWarning?.let { " warning=$it" } ?: ""))
             appendLine("calls=${h.calls.summary} settingsPending=${h.settingsPending}")
             appendLine("loopback=${h.loopbackTest} session=${h.session}")
             appendLine("callAudio=${callAudioStatus.value}")

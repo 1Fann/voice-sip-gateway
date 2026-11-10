@@ -31,6 +31,15 @@ class InviteTest {
     }
 
     @Test
+    fun simSlotHeader() {
+        assertNull(Invite.line(invite("x", "From: <sip:302@pbx>;tag=1")))
+        assertEquals(1, Invite.line(invite("x", "x-vsa-simslot: 1")))
+        assertEquals(0, Invite.line(invite("x", "X-VSA-SIMSLOT:0")))
+        assertEquals(Invite.INVALID_LINE, Invite.line(invite("x", "X-VSA-SIMSLOT: sim2")))
+        assertEquals(Invite.INVALID_LINE, Invite.line(invite("x", "X-VSA-SIMSLOT: -1")))
+    }
+
+    @Test
     fun headersStopAtBody() {
         val msg = invite("5551234567") + "\r\nX-VSA-Dial: 999"
         assertEquals("5551234567", Invite.target(msg))
@@ -44,5 +53,15 @@ class InviteTest {
             assertEquals(0, Invite.caller(invite("x", "X-VSA-SIM: $bad")).simSlot)
         assertEquals(0, Invite.caller(invite("x", "X-VSA-SIM: 1", "X-VSA-SIM: 2")).simSlot)
         assertNull(Invite.caller(invite("x") + "\r\nX-VSA-SIM: 2").simSlot)
+    }
+    @Test fun legacyOneBasedSlotConvertsToUpstreamZeroBasedLine() {
+        assertEquals(1, Invite.line("INVITE sip:2001@pbx SIP/2.0\r\nX-VSA-SIM: 2\r\n\r\n"))
+        assertEquals(0, Invite.line("INVITE sip:2001@pbx SIP/2.0\r\nX-VSA-SIM: 1\r\n\r\n"))
+    }
+    @Test fun conflictingOrDuplicateSlotHeadersNeverSelectAnotherSim() {
+        val head = "INVITE sip:2001@pbx SIP/2.0\r\n"
+        assertEquals(Invite.INVALID_LINE, Invite.line(head+"X-VSA-SIMSLOT: 0\r\nX-VSA-SIM: 2\r\n\r\n"))
+        assertEquals(1, Invite.line(head+"X-VSA-SIMSLOT: 1\r\nX-VSA-SIM: 2\r\n\r\n"))
+        assertEquals(Invite.INVALID_LINE, Invite.line(head+"X-VSA-SIMSLOT: 0\r\nX-VSA-SIMSLOT: 0\r\n\r\n"))
     }
 }

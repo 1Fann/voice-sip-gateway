@@ -43,6 +43,19 @@ class CellularOwnershipTest {
     private var opened: Handle? = null
     private var lost: ((String) -> Unit)? = null
     private var originalMute = false
+    private val simAccount = mock(PhoneAccountHandle::class.java)
+    private val sim1Account = mock(PhoneAccountHandle::class.java)
+    private val unknownSlotAccount = mock(PhoneAccountHandle::class.java)
+    private var defaultSim: PhoneAccountHandle? = simAccount
+    private var defaultSlot = DefaultSim.SYSTEM
+    private var inboundExcluded = emptySet<Int>()
+    private val sims = object : SimSlots {
+        override fun active() = listOf(SimSlot(0, 1, "Test", simAccount), SimSlot(1, 5, "Other", sim1Account))
+        override fun slotOf(account: PhoneAccountHandle?) = when (account) {
+            null, unknownSlotAccount -> null; sim1Account -> 1; else -> 0
+        }
+        override fun defaultAccount() = defaultSim
+    }
 
     private class Handle(private val failClose: Boolean) : CallAudioHandle {
         override val port = mock(MediaPort::class.java)
@@ -68,7 +81,7 @@ class CellularOwnershipTest {
             if (earlyLoss) onLost("socket died during open")
             if (openFailure) error("mode not settled")
             Handle(failHandleClose).also { opened = it }
-        }, {}, main, Executor { audioTasks += it })
+        }, {}, main, Executor { audioTasks += it }, sims, { defaultSlot }, { inboundExcluded })
         endpoint.setReadiness(true, "ready")
         endpoint.setIncomingCallHandler { leg = it as CellularLeg }
         CellularEndpoint.attachService(service)
@@ -308,6 +321,80 @@ class CellularOwnershipTest {
         }
     }
 
+    @Test fun inboundLegReportsItsSimSlot() {
+        endpoint.onCallAdded(service, call)
+        assertEquals(0, leg.line)
+    }
+
+    @Test fun incomingCallOnExcludedSlotIsLeftToThePhoneApp() {
+        inboundExcluded = setOf(0)
+        endpoint.onCallAdded(service, call)
+        assertFalse(::leg.isInitialized)
+        verify(call, never()).answer(anyInt())
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun unknownSlotIsLeftAloneOnlyWhileASimIsExcluded() {
+        val details = call.details
+        doReturn(unknownSlotAccount).`when`(details).accountHandle
+        inboundExcluded = setOf(1)
+        endpoint.onCallAdded(service, call)
+        assertFalse(::leg.isInitialized)
+
+        inboundExcluded = emptySet()
+        val second = makeCall(Call.STATE_RINGING)
+        val secondDetails = second.details
+        doReturn(unknownSlotAccount).`when`(secondDetails).accountHandle
+        endpoint.onCallRemoved(service, call)
+        endpoint.onCallAdded(service, second)
+        assertNull(leg.line)
+    }
+
+    @Test fun incomingCallOnOtherSlotIsStillTakenOver() {
+        inboundExcluded = setOf(1)
+        endpoint.onCallAdded(service, call)
+        assertEquals(0, leg.line)
+    }
+
+    @Test fun missingSlotOrDefaultSimRefusesPlacement() {
+        val unknown = endpoint.dial("5551234567", Party(null), line = 2)
+        drainMain()
+        assertEquals(HangupCause.UNAVAILABLE, unknown.endCause)
+        defaultSim = null
+        val noDefault = endpoint.dial("5551234567", Party(null))
+        drainMain()
+        assertEquals(HangupCause.UNAVAILABLE, noDefault.endCause)
+        verify(telecom, never()).placeCall(any(Uri::class.java), any(Bundle::class.java))
+        assertFalse(endpoint.hasCalls)
+    }
+
+    @Test fun configuredDefaultSlotRefusesWithoutFallingBack() {
+        defaultSlot = DefaultSim.REFUSE
+        val refused = endpoint.dial("5551234567", Party(null))
+        drainMain()
+        assertEquals(HangupCause.UNAVAILABLE, refused.endCause)
+        defaultSlot = 2 // no SIM there; the system default must not be used instead
+        val missing = endpoint.dial("5551234567", Party(null))
+        drainMain()
+        assertEquals(HangupCause.UNAVAILABLE, missing.endCause)
+        verify(telecom, never()).placeCall(any(Uri::class.java), any(Bundle::class.java))
+    }
+
+    @Test fun configuredDefaultSlotSelectsItsAccount() {
+        defaultSlot = 1
+        mockStatic(SystemClock::class.java).use {
+            mockStatic(Uri::class.java).use { uris ->
+                mockConstruction(Bundle::class.java).use { bundles ->
+                    uris.`when`<Uri> { Uri.fromParts(anyString(), anyString(), any()) }.thenReturn(mock(Uri::class.java))
+                    endpoint.dial("5551234567", Party(null))
+                    drainMain()
+                    verify(bundles.constructed().single()).putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, sim1Account)
+                    verify(telecom).placeCall(any(Uri::class.java), any(Bundle::class.java))
+                }
+            }
+        }
+    }
+
     @Test fun permissionRevocationBeforeQueuedPlacementRefusesCall() {
         val outgoing = endpoint.dial("5551234567", Party(null))
         doReturn(android.content.pm.PackageManager.PERMISSION_DENIED).`when`(context)
@@ -320,19 +407,7 @@ class CellularOwnershipTest {
     }
 
     @Test fun explicitSimUsesPhoneAccountAndRejectsDifferentReportedAccount() {
-        val subscriptions = mock(android.telephony.SubscriptionManager::class.java)
-        val subscription = mock(android.telephony.SubscriptionInfo::class.java)
-        val telephony = context.getSystemService(TelephonyManager::class.java)
-        val selected = mock(TelephonyManager::class.java)
-        val account = mock(PhoneAccountHandle::class.java)
-        doReturn(subscriptions).`when`(context).getSystemService(android.telephony.SubscriptionManager::class.java)
-        doReturn(subscription).`when`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
-        doReturn(47).`when`(subscription).subscriptionId
-        doReturn(selected).`when`(telephony).createForSubscriptionId(47)
-        doReturn(TelephonyManager.SIM_STATE_READY).`when`(selected).simState
-        doReturn(47).`when`(selected).subscriptionId
-        doReturn(selected).`when`(telephony).createForPhoneAccountHandle(account)
-        doReturn(listOf(account)).`when`(telecom).callCapablePhoneAccounts
+        val account = sim1Account
         mockStatic(SystemClock::class.java).use {
             mockStatic(Uri::class.java).use { uris ->
                 mockConstruction(Bundle::class.java).use { bundles ->

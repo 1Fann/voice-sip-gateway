@@ -1,49 +1,33 @@
 # Voice SIP Gateway
 
-**Version: 0.3.5-custom.7** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+[中文](README.md) | English
 
-First-run permission onboarding, SIM-account/empty-data diagnostics, accessible Health actions, bounded Shizuku binding retries and assistant recovery. Existing SIM selection and native audio are retained.
+Bridge Android cellular calls to a SIP PBX for remote calling through clients such as Groundwire.
 
-[中文](README.md) · [Download APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [Upstream](https://github.com/sparkcyf/android-voice-sip-agent)
+[Download APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [Release notes](https://github.com/1Fann/voice-sip-gateway/releases)
 
-Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.7**, versionCode10. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+## Features
 
-## Update 0.3.5-custom.7
+- Bridge incoming cellular calls to SIP and SIP calls to cellular.
+- Select an outgoing SIM and configure incoming takeover per SIM.
+- IPv4/IPv6, UDP/TCP/TLS and SRTP.
+- Configuration import/export and trusted TLS certificates.
+- Configured device/SIM caller labels with CommLink and PBX integration.
 
-Adds IPv6 SIP/RTP, registrar DNS refresh, network-change recovery and incoming SIM metadata resolved from the actual Telecom account. Pair with CommLink 0.9.8 for configured phone/SIM aliases. Retains the signing identity and custom.5 behavior. [IPv6 deployment](docs/ipv6-domain.md) · [Incoming line integration](docs/incoming-line.md)
+## Getting started
 
-## Update 0.3.5-custom.5
+Requires Android 11+, ARM64, Shizuku, call permissions and a SIP PBX. Audio compatibility varies by device. Exported configuration contains the SIP password in plain text; keep it private.
 
-An already authorized idle privileged service survives an unexpected gateway process exit. The replacement process registers its Binder/PID and rechecks current permissions, audio capabilities and SIP. Readiness is never restored from a cache. Client death during audio work or with owned resources triggers independent cleanup and process retirement. Manual stop still destroys the service, and APK updates recreate old service code. Use assistant 1.4.6; daemon-request support requires at least 1.4.5.
+Download the release, follow the installation guide, grant the requested permissions and configure your own account locally. Keep the same signing identity when upgrading to retain app data.
 
-Live Android service queries replace command startup for AppOps and the power allowlist, with the existing command fallback on query failure. Native audio libraries, call routing, account settings and the production signature remain unchanged. Recovery timing depends on the device and failure; no universal fixed-time guarantee is made.
+## Documentation
 
-## Previous update 0.3.5-custom.3
-
-Settings, status, call UI, consent explanations and notifications are now Chinese. Raw protocol/system logs remain in their original technical form. Added background-access guidance and a permission-protected recovery entry point for the helper.
-
-The reproduced failure involved Android background restrictions, disabled MIUI autostart, and a readiness check accepting stale registration without a foreground service. Shortening the full-check interval alone was insufficient.
-
-The assistants now show a background-access setup prompt. After explicit confirmation, Root changes are limited to the assistant and its trusted paired gateway: background execution, battery-optimization exemption, and recognized MIUI autostart. Phone, microphone, notification, and Shizuku consent remain separate. Unsupported settings identify the failed step instead of incorrectly reporting missing Root.
-
-When monitoring is enabled, an approximately 10-second lightweight check detects a missing foreground service. Full checks retain the configured 1–1440-minute interval. Consented background settings may be repaired if restrictions return. Server and gateway recovery retain separate ownership, a shared repair lock, active-call guards and manual-OFF behavior. Recovery is not uninterrupted availability.
-
-The existing Asterisk dedicated-wake option now also controls a renewable, bounded root-monitor wake lease. Disabling it releases the lease. DDNS keeps its separate existing daemon and wake option.
-
-## Changes
-
-Both SIP stacks parse per-call `X-VSA-SIM: 1` or2. The cellular endpoint resolves the active physical slot and supplies its Telecom PhoneAccount without changing Android's default voice SIM. Missing, locked, ambiguous or inaccessible selections fail closed; invalid/duplicate headers are refused. No selector preserves upstream default-SIM behavior. A wrong initially reported call account is rejected. One gateway call at a time; concurrent dual-SIM calls are not added. Native audio libraries and local-output muting remain upstream implementations.
-
-A PBX may map authenticated1001→SIM1 and1002→SIM2 and add the header; that mapping is configuration, not hardcoded account routing in this APK. `X-VSA-Dial` carries the number. Existing emergency refusal remains; use the system phone for emergency calls.
-
-## Compatibility and update
-
-ARM64, Android11+, upstream Shizuku/call permissions. Hardware validation currently covers one rooted MediaTek Redmi. Its ROM-specific bootstrap is in [Voice SIP Assistant](https://github.com/1Fann/voice-sip-assistant), not a native gateway audio modification. Other handsets remain untested.
-
-The package stays `com.fann.voicesip.dualsim` and retains its signing identity so users of0.3.5-mtk.1 can update with settings/permissions retained; versionCode rises3→8. The display name remains Voice SIP 网关. This is a different package/signature from upstream. Disable any old gateway before migration. Never post SIP credentials in issues. Local-output muting compatibility requires actual device audio tests.
-
-See [BUILDING.md](BUILDING.md), [CHANGES.md](CHANGES.md), [third-party notices](THIRD_PARTY_NOTICES.md), and the preserved [upstream README](README.upstream.md). Releases include APK, checksums and a source archive. This release reuses the verified upstream v0.3.5 ARM64 native libraries; generated Java JNI sources are included under third_party/pjsua2-java. Original native build scripts and patches remain. Production signing keys are never uploaded.
+- [New-phone setup](NEW-PHONE-SETUP.md)
+- [Building](BUILDING.md)
+- [IPv6 setup](docs/ipv6-domain.md)
+- [Incoming caller labels](docs/incoming-line.md)
+- [Upstream guide](README.upstream.md)
 
 ## License
 
-GPL-2.0-or-later with the upstream exception permitting Apache-2.0 library linking provided the remaining code complies with the GPL. Full original grant is in [README.md](README.md); [LICENSE](LICENSE) and third-party notices are preserved.
+Based on [Voice SIP Agent](https://github.com/sparkcyf/android-voice-sip-agent), under GPL-2.0-or-later with upstream linking exceptions and third-party notices. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

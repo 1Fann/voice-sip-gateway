@@ -2,7 +2,9 @@ package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +33,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -38,11 +42,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -51,11 +58,16 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModelProvider
 import io.github.sparkcyf.voicesipagent.pjsua2.SipTransport
 import io.github.sparkcyf.voicesipagent.pjsua2.SrtpPolicy
+import io.github.sparkcyf.voicesipagent.pjsua2.TlsCertificates
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.CallAudioStatus
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
+import io.github.sparkcyf.voicesipagent.telephony.DefaultSim
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : DialerRoleActivity() {
     private var backgroundSummary by mutableStateOf("正在检查后台运行权限")
@@ -222,6 +234,8 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
                 else
                     "启用后，尝试关闭本机听筒或扬声器声音。网关通话期间仍会关闭本机麦克风。修改从下一通电话生效。"
             }
+            SimInboundToggles(cur.inboundExcludedSlots, h) { slot, on -> rt.setSimInbound(slot, on) }
+            DefaultSimChoice(cur.defaultSimSlot, h) { rt.setDefaultSimSlot(it) }
             if (h.settingsPending && pendingSettings?.hasSameSipSettings(cur) != false) {
                 Text("修改将在当前通话结束后生效", style = MaterialTheme.typography.bodySmall)
             }
@@ -240,6 +254,7 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
             Check("已加入电池优化白名单", p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
             Check("SIP 注册", h.sip.ready,
                 if (h.takeover) UiChinese.sip(h.sip.ready, h.sip.detail) else "网关关闭期间已停止")
+            Text("SIM 卡槽：" + h.sims.joinToString { "${it.slot + 1} ${it.carrier}" }.ifEmpty { "未检测到" }, style = MaterialTheme.typography.bodySmall)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -302,6 +317,7 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
             }
         }
         SettingsSection(rt, editor)
+        ConfigFileSection(rt)
         var advanced by rememberSaveable { mutableStateOf(false) }
         OutlinedButton(onClick = { advanced = !advanced }) { Text(if (advanced) "收起高级设置" else "高级设置") }
         if (advanced) {
@@ -401,6 +417,7 @@ private fun SettingsSection(rt: GatewayRuntime, editor: SipSettingsDraft) = with
         Choice("语音加密 SRTP（仅 TLS）", SrtpPolicy.entries, srtp, { when(it) { SrtpPolicy.OFF -> "关闭"; SrtpPolicy.OPTIONAL -> "可选"; else -> "必须加密" } }, enabled = { !builtin && transport == SipTransport.TLS }) {
             srtp = it
         }
+        TlsCertificateSettings(editor, enabled = !builtin && transport == SipTransport.TLS)
         Field("SIP 服务器地址", server) { server = it }
         Field("SIP 服务器端口", port, KeyboardType.Number, error = portValidationError) { port = it }
         Field("SIP 域名（留空使用服务器地址）", domain) { domain = it }
@@ -430,6 +447,144 @@ private fun SettingsSection(rt: GatewayRuntime, editor: SipSettingsDraft) = with
             "记录调试信息，日志中的号码会脱敏"
         }
     }
+}
+
+/** Edits the draft only; Save & apply restarts pjsua2 when the certificate policy changes. */
+@Composable
+private fun TlsCertificateSettings(editor: SipSettingsDraft, enabled: Boolean) = with(editor) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var message by rememberSaveable { mutableStateOf("") }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)!!.use { TlsCertificates.normalize(TlsCertificates.read(it)) }
+                }
+            }.fold({ tlsCa = it; message = "" }, { message = "导入失败： ${it.message ?: it.javaClass.simpleName}" })
+        }
+    }
+    val dim = if (enabled) 1f else 0.38f
+    Toggle("验证 TLS 证书", tlsVerify, { tlsVerify = it }, enabled = enabled) {
+        if (tlsVerify) "检查证书链、有效期和服务器名称。"
+        else "将接受所有证书，包括过期、自签名和服务器名称不匹配的证书。"
+    }
+    if (enabled && !tlsVerify) {
+        Text("不安全：网络中的攻击者可能冒充服务器，读取或修改 SIP 信令，" +
+            "并获取 SRTP 密钥。仅限测试或可信网络使用。",
+            color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
+    Text("信任的 TLS 证书", style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim))
+    val certs = remember(tlsCa) { runCatching { TlsCertificates.certificates(tlsCa) }.getOrDefault(emptyList()) }
+    if (tlsCa.isEmpty()) {
+        Text("Android 系统证书", color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim))
+    } else {
+        Text("仅信任以下证书，替代系统证书：", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim))
+        certs.forEach {
+            Text(TlsCertificates.describe(it), fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim))
+        }
+    }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = enabled) { Text("导入证书") }
+        if (tlsCa.isNotEmpty()) OutlinedButton(onClick = { tlsCa = "" }, enabled = enabled) { Text("使用系统证书") }
+    }
+    Text("可导入私有 CA 或服务器的自签名证书（PEM／DER）。除非关闭证书验证，" +
+        "否则服务器名称仍须与证书一致。", style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = dim))
+    if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun ConfigFileSection(rt: GatewayRuntime) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var message by rememberSaveable { mutableStateOf("") }
+    var preview by remember { mutableStateOf<Pair<ConfigFile.Import, List<String>>?>(null) }
+    val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val text = ConfigFile.export(rt.savedSettings(), ConfigFile.exportedBy(context))
+        scope.launch {
+            message = withContext(Dispatchers.IO) {
+                runCatching { context.contentResolver.openOutputStream(uri, "w")!!.use { it.write(text.toByteArray()) } }
+            }.fold({ "设置已导出。" }, { "导出失败： ${it.message ?: it.javaClass.simpleName}" })
+        }
+    }
+    val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { context.contentResolver.openInputStream(uri)!!.use { ConfigFile.parse(ConfigFile.read(it)) } }
+            }.fold({ import ->
+                val current = rt.savedSettings()
+                val changes = ConfigFile.changes(current, import.applyTo(current))
+                if (changes.isEmpty()) message = "文件中的设置与当前设置一致。" else preview = import to changes
+            }, { message = "导入失败： ${it.message ?: it.javaClass.simpleName}" })
+        }
+    }
+    preview?.let { (import, changes) ->
+        AlertDialog(
+            onDismissRequest = { preview = null },
+            title = { Text("导入设置？") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("文件包含 ${import.keys.size} 项设置，将修改 ${changes.size} 项：")
+                    changes.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 15.sp) }
+                    Text("不会改变接管开关。正在通话时，设置会在通话结束后生效。",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    rt.applySettings(import::applyTo)
+                    message = "已导入 ${changes.size} 项设置。"
+                    preview = null
+                }) { Text("导入") }
+            },
+            dismissButton = { TextButton(onClick = { preview = null }) { Text("取消") } },
+        )
+    }
+    Section("配置文件") {
+        Text("导出文件包含除接管开关外的设置，以及明文 SIP 密码，请妥善保管。" +
+            "导入只修改文件中包含的设置。", style = MaterialTheme.typography.bodySmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { exporter.launch(ConfigFile.DEFAULT_NAME) }) { Text("导出到文件") }
+            OutlinedButton(onClick = { importer.launch(arrayOf("application/json", "text/*", "application/octet-stream")) }) {
+                Text("从文件导入")
+            }
+        }
+        if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun SimInboundToggles(excluded: Set<Int>, h: HealthState, onChange: (Int, Boolean) -> Unit) {
+    // Excluded slots stay listed while their SIM is inactive, so they can be switched back on.
+    val slots = (h.sims.map { it.slot } + excluded).distinct().sorted()
+    slots.forEach { slot ->
+        val carrier = h.sims.firstOrNull { it.slot == slot }?.carrier ?: "未插卡"
+        Toggle("接管 SIM ${slot + 1} 的来电", slot !in excluded, { onChange(slot, it) }) {
+            if (slot in excluded) "$carrier：来电由本机接听" else "$carrier：来电转接到 SIP 服务器"
+        }
+    }
+}
+
+@Composable
+private fun DefaultSimChoice(selected: Int, h: HealthState, onSelect: (Int) -> Unit) {
+    val slots = (h.sims.map { it.slot } + listOfNotNull(selected.takeIf { it >= 0 })).distinct().sorted()
+    Choice("未指定线路时使用的 SIM", listOf(DefaultSim.SYSTEM) + slots + DefaultSim.REFUSE, selected,
+        { when (it) { DefaultSim.SYSTEM -> "跟随系统"; DefaultSim.REFUSE -> "拒绝拨出"; else -> "SIM ${it + 1}" } }, onSelect = onSelect)
+    val carrier = h.sims.firstOrNull { it.slot == selected }?.carrier
+    Text(when (selected) {
+        DefaultSim.SYSTEM -> "跟随 Android 默认通话卡（当前：" +
+            (h.systemSimSlot?.let { s -> "SIM ${s + 1} ${h.sims.firstOrNull { it.slot == s }?.carrier.orEmpty()}".trim() } ?: "每次询问") + "）。"
+        DefaultSim.REFUSE -> "服务器必须明确指定 SIM 才能拨出。"
+        else -> "固定使用 SIM ${selected + 1}${carrier?.let { " ($it)" } ?: ""}；卡槽无可用 SIM 时拒绝拨出。"
+    } + " 下一通电话生效。", style = MaterialTheme.typography.bodySmall)
+    h.simWarning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

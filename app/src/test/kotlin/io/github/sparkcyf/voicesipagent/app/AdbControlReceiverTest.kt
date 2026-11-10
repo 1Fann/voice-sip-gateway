@@ -7,6 +7,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import java.io.File
+import java.nio.file.Files
 import org.junit.Assert.*
 import org.junit.Test
 import org.mockito.Mockito.*
@@ -17,7 +19,7 @@ class AdbControlReceiverTest {
         doAnswer { update = it.getArgument(0); null }.`when`(f.runtime).applySettings(any() ?: { it })
         val args = mutableMapOf<String, Any>("op" to "provision", "server" to "new.invalid",
             "password" to "test-secret", "target" to "", "transport" to "TLS", "srtp" to "MANDATORY",
-            "port" to 5061, "audio_method" to 2, "call_access" to 1, "hold_sip" to false)
+            "port" to 5061, "audio_method" to 2, "call_access" to 1, "hold_sip" to false, "tls_verify" to false)
         f.receive(args)
         verify(f.pending, never()).finish()
 
@@ -28,7 +30,7 @@ class AdbControlReceiverTest {
             inboundTarget = "old-target", allowedPrefixes = "123", sipDebugLog = true)
         assertEquals(current.copy(server = "new.invalid", password = "test-secret", inboundTarget = "",
             sipTransport = "tls", srtp = "mandatory", port = 5061, audioMethod = 2, callAccess = 1,
-            holdSipWhenNotReady = false), update!!(current))
+            holdSipWhenNotReady = false, tlsVerify = false), update!!(current))
 
         f.drain()
         verify(f.pending).setResult(1, "ok: settings snapshot", null)
@@ -44,6 +46,7 @@ class AdbControlReceiverTest {
             mapOf("call_access" to -1), mapOf("call_access" to 3),
             mapOf("password" to 123),
             mapOf("hold_sip" to "false"), mapOf("passwrod" to "test-secret"),
+            mapOf("tls_verify" to "false"), mapOf("tls_ca" to 1), mapOf("tls_ca" to "test-secret"),
         )
         val invalid = invalidProvisionArgs.map {
             mapOf("op" to "provision", "password" to "test-secret") + it
@@ -125,6 +128,82 @@ class AdbControlReceiverTest {
         verify(f.pending).finish()
     }
 
+    @Test fun exportWritesSavedSettingsWithPasswordButRepliesWithout(): Unit = Fixture().use { f ->
+        doReturn(GatewaySettings(server = "sip.example.org", password = "test-secret")).`when`(f.runtime).savedSettings()
+        f.receive(mapOf("op" to "export"))
+        val file = File(f.external, ConfigFile.DEFAULT_NAME)
+        assertFalse(file.exists())
+        f.drain()
+        val data = org.mockito.ArgumentCaptor.forClass(String::class.java)
+        verify(f.pending).setResult(eq(1), data.capture(), isNull())
+        assertEquals("ok: exported to ${file.canonicalPath}", data.value)
+        val settings = ConfigFile.parse(file.readText()).applyTo(GatewaySettings())
+        assertEquals("sip.example.org", settings.server)
+        assertEquals("test-secret", settings.password)
+    }
+
+    @Test fun importValidatesFileThenMergesWithLatestSettings(): Unit = Fixture().use { f ->
+        var update: ((GatewaySettings) -> GatewaySettings)? = null
+        doAnswer { update = it.getArgument(0); null }.`when`(f.runtime).applySettings(any() ?: { it })
+        val file = File(f.external, "other.json")
+        file.writeText("""{"format":"voice-sip-agent-config","version":1,"sip":{"password":"test-secret","port":5061}}""")
+        f.receive(mapOf("op" to "import", "path" to file.path))
+        // The file is read once, at dispatch.
+        file.delete()
+        val current = GatewaySettings(username = "latest-user", takeover = false)
+        assertEquals(current.copy(password = "test-secret", port = 5061), update!!(current))
+        f.drain()
+        verify(f.pending).setResult(1, "ok: imported 2 settings; settings snapshot", null)
+        assertFalse(AppLog.tail.value.any { it.contains("test-secret") })
+    }
+
+    @Test fun provisionTlsCaReadsCertificateFileOrResetsToSystem(): Unit = Fixture().use { f ->
+        var update: ((GatewaySettings) -> GatewaySettings)? = null
+        doAnswer { update = it.getArgument(0); null }.`when`(f.runtime).applySettings(any() ?: { it })
+        val file = File(f.external, "pbx.pem").apply { writeText("pbx\n" + TEST_CERT_PEM) }
+        f.receive(mapOf("op" to "provision", "tls_ca" to file.path))
+        // Read once, at dispatch.
+        file.delete()
+        assertEquals(GatewaySettings(tlsCa = TEST_CERT_PEM), update!!(GatewaySettings()))
+
+        f.receive(mapOf("op" to "provision", "tls_ca" to "system"))
+        assertEquals(GatewaySettings(), update!!(GatewaySettings(tlsCa = TEST_CERT_PEM)))
+    }
+
+    @Test fun badPathsAndFilesAreRejectedBeforeRuntimeMutation(): Unit = Fixture().use { f ->
+        val bad = File(f.external, "bad.json").apply { writeText("""{"format":"voice-sip-agent-config","version":1,"sip":{"port":"test-secret"}}""") }
+        val private = File(f.data, "shared_prefs/gateway.json")
+        val cases = listOf(
+            mapOf("op" to "import") to "cannot read",
+            mapOf("op" to "import", "path" to bad.path) to "sip.port must be",
+            mapOf("op" to "import", "path" to "relative.json") to "path must be absolute",
+            mapOf("op" to "import", "path" to private.path) to "outside the app's private storage",
+            mapOf("op" to "export", "path" to "${f.external}/../${f.data.name}/x.json") to "outside the app's private storage",
+            mapOf("op" to "export", "path" to 1) to "path must use --es",
+            mapOf("op" to "export", "file" to "x") to "unexpected argument",
+            mapOf("op" to "provision", "tls_ca" to bad.path) to "not an X.509 certificate",
+            mapOf("op" to "provision", "tls_ca" to "${f.external}/missing.pem") to "cannot read",
+            mapOf("op" to "provision", "tls_ca" to private.path) to "outside the app's private storage",
+        )
+        for ((args, expected) in cases) {
+            clearInvocations(f.pending)
+            f.receive(args)
+            val data = org.mockito.ArgumentCaptor.forClass(String::class.java)
+            verify(f.pending).setResult(eq(2), data.capture(), isNull())
+            assertTrue(data.value, data.value.startsWith("error: ") && data.value.contains(expected))
+            assertFalse(data.value.contains("test-secret"))
+            verifyNoInteractions(f.runtime)
+        }
+    }
+
+    @Test fun exportWriteFailureIsAnError(): Unit = Fixture().use { f ->
+        doReturn(GatewaySettings()).`when`(f.runtime).savedSettings()
+        f.receive(mapOf("op" to "export", "path" to "${f.external}/missing/dir/x.json"))
+        f.drain()
+        verify(f.pending).setResult(eq(2), startsWith("error: cannot write"), isNull())
+        verify(f.pending).finish()
+    }
+
     private class Fixture : AutoCloseable {
         private val log = mockStatic(Log::class.java)
         private val looper = mockStatic(Looper::class.java)
@@ -132,6 +211,9 @@ class AdbControlReceiverTest {
         val receiver = mock(AdbControlReceiver::class.java, CALLS_REAL_METHODS)
         val pending = mock(BroadcastReceiver.PendingResult::class.java)
         private val context = mock(Context::class.java)
+        private val root: File = Files.createTempDirectory("adb-control").toFile()
+        val external = File(root, "external").apply { mkdirs() }
+        val data = File(root, "data").apply { mkdirs() }
         private val singleton = GatewayRuntime::class.java.getDeclaredField("instance").apply { isAccessible = true }
         private val previous = singleton.get(null)
         private val queue = ArrayDeque<() -> Unit>()
@@ -144,6 +226,8 @@ class AdbControlReceiverTest {
         init {
             singleton.set(null, runtime)
             doReturn(true).`when`(receiver).isOrderedBroadcast
+            doReturn(external).`when`(context).getExternalFilesDir(null)
+            doReturn(data).`when`(context).dataDir
             doReturn(pending).`when`(receiver).goAsync()
             doReturn("ready=false").`when`(runtime).statusLine()
             doReturn("settings snapshot").`when`(runtime).settingsLine()
@@ -166,6 +250,7 @@ class AdbControlReceiverTest {
 
         override fun close() {
             singleton.set(null, previous)
+            root.deleteRecursively()
             handlers.close()
             looper.close()
             log.close()

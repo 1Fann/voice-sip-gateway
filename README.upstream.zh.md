@@ -11,8 +11,20 @@
 - 通话音频通过直接电话路由或 Android 的通话重定向 API 截取和注入。桥接期间可静音本机通话输出，本机麦克风始终保持静音。
 
 特权操作（通话音频拦截、Telecom 伴侣覆盖、appops）通过以 shell 用户（uid 2000）运行的
-[Shizuku](https://shizuku.rikka.app/) 完成，**不需要 root**。项目依赖隐藏的系统 API，这也是它只在 GitHub Releases
-发布、不上 Google Play 的原因。
+[Shizuku](https://shizuku.rikka.app/) 完成，**不需要 root**。项目依赖隐藏的系统 API，因此不会在 Google Play 上架。
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/images/takeover-dual-sim.png" width="320" alt="接管设置与每张卡的开关"><br>
+      <sub>接管总开关、每张卡的来电接管，以及 PBX 去电使用的 SIM 卡</sub>
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/images/bridged-call.png" width="320" alt="健康检查与正在桥接的通话"><br>
+      <sub>一通蜂窝来电已桥接到 PBX，本机通话声音已静音</sub>
+    </td>
+  </tr>
+</table>
 
 > [!WARNING]
 > 这是一个基于未公开 Android 行为的个人项目，任何一次系统更新都可能让它失效，也可能掉话或把呼叫送错地方。
@@ -46,8 +58,8 @@
 默认 pjsua2 栈支持 Opus，并保留 G.711 作为回退。
 编解码设置和其他验证事项见英文[音频格式与路由说明](TECHNICAL.md#audio-formats-and-routing)。
 
-限制：同一时间只有一路通话；APK 包含 arm64-v8a；最低为 Android 11（minSdk 30）。
-Android 11 尚未测试。各厂商的隐藏 API 和音频路由不同，其他机型可能需要不同的音频设置，也可能完全无法使用。
+限制：同一时间只有一路通话；尚未实现早期媒体（early media，即回铃音、忙音等）；APK 包含 arm64-v8a；最低为 Android 11（minSdk 30）。
+Android 11 尚未测试。各厂商的隐藏 API 和音频 HAL 路由不同，其他机型可能需要不同的音频设置，也可能完全无法使用。
 默认拨号器模式提供网关状态和恢复界面，可通过切换拨号器恢复手动通话。紧急号码一律拒绝，绝不会经网关拨出。
 
 ## 安装
@@ -78,10 +90,12 @@ Android 11 尚未测试。各厂商的隐藏 API 和音频路由不同，其他�
 
 | 设置项 | 含义 |
 |---|---|
-| SIP stack | `pjsua2`（默认；UDP/TCP/TLS、SRTP）或 `builtin`（纯 Kotlin，仅 UDP） |
+| SIP stack | `pjsua2`（默认；UDP/TCP/TLS、SRTP）或 `builtin`（纯 Kotlin，仅 UDP；已弃用，新功能只做 pjsua2） |
 | PBX host / port | 注册服务器 / 代理地址 |
 | Transport | `udp`（局域网）、`tcp` 或 `tls`（仅 pjsua2） |
 | SRTP | `off`、`optional`（提供 SDES，对端不支持时退回 RTP）或 `mandatory`（不支持则 488）；仅在 TLS 下生效 |
+| Verify TLS certificate | 开启（默认）。关闭后接受任何服务器证书，见下文 |
+| Trusted certificates (TLS) | Android 系统 CA（默认），或导入的 PEM/DER 证书（取代系统 CA） |
 | SIP domain | 默认等于 PBX host |
 | User / password | PBX 上 trunk 的凭据 |
 | Cellular inbound → SIP target | 蜂窝来电时在 PBX 上呼叫的 DID；留空则使用 SIP 用户名 |
@@ -91,10 +105,88 @@ Android 11 尚未测试。各厂商的隐藏 API 和音频路由不同，其他�
 点击 **Save & apply** 保存；通话中提交的修改会等待当前通话结束后生效。
 接管关闭时保存的 SIP 设置将在下次开启接管时使用。
 
-TLS 用 Android 系统 CA 库校验服务器证书链和主机名，仅支持 TLS 1.2/1.3，接受最左一级的 `*.` 通配证书（RFC 6125）。
-不做降级：TLS 失败就注册失败，每 30 s 重试。
+TLS 用 Android 系统 CA 库校验服务器证书链、有效期和主机名，仅支持 TLS 1.2/1.3，接受最左一级的 `*.` 通配证书（RFC 6125）。
+不做降级：TLS 失败就注册失败，每 30 s 重试。私有 PBX 可用以下两个选项（仅 pjsua2）：
+
+- **Import certificate**：只信任导入的证书，不再信任系统 CA。可以是企业私有 CA，也可以是 PBX 自己的自签名证书
+  （相当于钉住这张证书）。证书链、有效期和主机名照常校验，所以证书必须包含 **PBX host** 里填写的名字
+  （subject alternative name 中的 DNS 名或 IP 地址）。App 会列出每张证书的到期日和 SHA-256 指纹，可以与 PBX 上
+  `openssl x509 -noout -fingerprint -sha256 -in <文件>` 的输出比对。**Use system CAs** 恢复使用系统 CA。
+- **Verify TLS certificate** 关闭：接受任何证书，包括过期、自签名或名字不符的证书。此时能截获连接的人可以冒充 PBX，
+  读取或篡改 SIP 信令，包括 SRTP 密钥。只用于测试或可信网络。
+
+### 配置文件
+
+**Configuration file → Export to file** 把除 **Take over calls** 开关以外的全部设置导出为 JSON。
+**Import from file** 先列出会改变的设置，确认后才应用。只有文件中出现的 key 会被修改，例如文件里可以只写 SIP 账号。
+与 **Save & apply** 一样，导入的修改等待当前通话结束后生效。导入不会打开或关闭接管。
+
+> [!WARNING]
+> 导出的文件以明文保存 SIP 密码，请妥善保管。
+
+```json
+{
+  "format": "voice-sip-agent-config",
+  "version": 1,
+  "exportedBy": "Voice SIP Agent 0.4.0",
+  "sip": {
+    "stack": "pjsua2",
+    "server": "sip.example.org",
+    "port": 5061,
+    "transport": "tls",
+    "srtp": "optional",
+    "tlsVerify": true,
+    "tlsCa": "",
+    "domain": "sip.example.org",
+    "user": "android-gw",
+    "password": "<secret>",
+    "localPort": 5062,
+    "holdWhenNotReady": true,
+    "debugLog": false
+  },
+  "routing": {
+    "target": "android-gw",
+    "prefixes": ["+1", "00"],
+    "busyPolicy": "reject",
+    "defaultSim": "system",
+    "inboundExcludedSlots": [1]
+  },
+  "device": {
+    "audioMethod": "auto",
+    "callAccess": "auto",
+    "muteEarpiece": true,
+    "keepDefaultDialer": false
+  }
+}
+```
+
+| Key | 取值 |
+|---|---|
+| `format`、`version` | 必填：`"voice-sip-agent-config"` 和 `1`。`exportedBy` 仅供参考。 |
+| `sip.stack` | `pjsua2` 或 `builtin` |
+| `sip.port`、`sip.localPort` | 1–65535；`localPort` 是自研栈的本地 UDP 端口 |
+| `sip.transport` / `sip.srtp` | `udp`、`tcp`、`tls` / `off`、`optional`、`mandatory` |
+| `sip.tlsVerify` | **Verify TLS certificate**；`false` 接受任何证书 |
+| `sip.tlsCa` | 信任的证书，整个 PEM 写成一个字符串（换行写作 `\n`）；`""` 表示 Android 系统 CA |
+| `sip.domain` | 留空表示使用 PBX 主机 |
+| `sip.holdWhenNotReady` | **Unregister while the phone cannot take calls** |
+| `sip.debugLog` | **pjsip debug log** |
+| `routing.target` | 蜂窝来电 → SIP 目标；留空表示 SIP 用户名 |
+| `routing.prefixes` | 允许拨出的前缀，字符串数组；`[]` 表示不限 |
+| `routing.busyPolicy` | `reject` 或 `ignore`（忙时把蜂窝来电留给手机） |
+| `routing.defaultSim` | 不带 `X-VSA-SIMSLOT` 时使用的 SIM：`"system"`、`"refuse"` 或卡槽号 |
+| `routing.inboundExcludedSlots` | 来电留给手机 App、不接管的卡槽 |
+| `device.audioMethod` | `auto`、`redirection` 或 `direct`（**Cellular audio**） |
+| `device.callAccess` | `auto`、`companion` 或 `dialer`（**Call access**） |
+| `device.muteEarpiece` | **Mute call audio on this phone** |
+| `device.keepDefaultDialer` | **Keep this app as the default phone app when gateway is off** |
+
+应用前会先校验整个文件：出现未知 key、类型错误、取值越界或更高的 `version` 时整份拒绝。
+错误信息只给出 key，不包含它的值。`device` 一节与机型和卡槽有关，导入其他手机导出的文件前请先检查这一节。
 
 ### 网关状态与恢复
+
+<img src="docs/images/health.png" width="360" alt="各项检查均通过的 Health 区">
 
 在 **Health** 中查看 setup 或注册错误。接管开启时，可在授权 Shizuku 后使用 **Re-run setup** 重新设置，
 或使用 **Reconnect SIP** 根据已保存的凭据重新注册。
@@ -130,12 +222,31 @@ adb shell am broadcast -n $R --es op status            # 返回一行摘要；�
 adb shell am broadcast -n $R --es op takeover --ez on false
 adb shell am broadcast -n $R --es op earpiece-mute --ez on true
 adb shell am broadcast -n $R --es op sip-stack --es stack pjsua2
+adb shell am broadcast -n $R --es op default-sim --es sim system   # 不带 X-VSA-SIMSLOT 时用哪张卡：system|refuse|<卡槽>
+adb shell am broadcast -n $R --es op sim-inbound --ei slot 0 --ez on false   # 卡 0 的来电不接管，留给手机
 adb shell am broadcast -n $R --es op loopback --ez on true   # 回声测试：蜂窝来电直接回声
 adb shell am broadcast -n $R --es op sip-debug --ez on true  # pjsip 详细日志
 adb shell am broadcast -n $R --es op provision --ez hold_sip false   # 未就绪时也保持注册
+adb shell am broadcast -n $R --es op provision --es tls_ca /sdcard/Android/data/io.github.sparkcyf.voicesipagent/files/pbx.pem   # 或 "system"
+adb shell am broadcast -n $R --es op provision --ez tls_verify false   # 接受任何 TLS 证书（不安全）
 adb shell am broadcast -n $R --es op provision --ei audio_method 2   # 0 Automatic，1 Call redirection，2 Direct telephony
 adb logcat -s VoiceSipAgent VsaPrivileged VsaTap
 ```
+
+需要一次传输多项设置时，可使用[配置文件](#配置文件)。不带 `--es path` 时，导出和导入都使用
+App 外部文件目录中的 `voice-sip-agent-config.json`，adb 可以直接读写：
+
+```bash
+F=/sdcard/Android/data/io.github.sparkcyf.voicesipagent/files/voice-sip-agent-config.json
+adb shell am broadcast -n $R --es op export    # 写入 $F；广播回复不含密码
+adb pull $F
+adb push voice-sip-agent-config.json $F
+adb shell am broadcast -n $R --es op import    # 回复导入的设置项数量
+adb shell am broadcast -n $R --es op import --es path /data/local/tmp/vsa.json   # 任何 App 可读的绝对路径
+```
+
+受 scoped storage 限制，App 读不到 adb 推送到共享存储（如 `/sdcard/Download`）的文件，但可以在那里新建文件。
+App 私有存储内的路径会被拒绝。在 Android 17 的 Pixel 上，`/data/local/tmp` 可读、不可写。
 
 广播结果：`result=1` 表示确认接收，`2` 表示错误，`3` 表示等待 5 秒后超时。
 确认接收不代表操作已完成；变更可能等待当前通话结束后应用。重试前请查看 logcat 或 App 内日志。
@@ -149,6 +260,10 @@ adb logcat -s VoiceSipAgent VsaPrivileged VsaTap
 - **对方听不到你，或者你只听到静音**：把 **Cellular audio** 设为 *Direct telephony*，并关闭
   **Mute call audio on this phone**（adb 下为 `--ei audio_method 2` 和 `earpiece-mute --ez on false`）。
   在上表的社区测试设备上，只有这个组合能双向通话。
+- **某张卡的来电接通几秒后被挂断，日志出现 `not in a cellular call: audio mode=3`**：这张卡的通话被运营商 App 当作 VoIP
+  处理（例如 Pixel 上开启 Wi-Fi 通话的 Google Fi），通话音频不经过基带。请关闭这张卡的 Wi-Fi 通话。
+- **双卡手机上不带 `X-VSA-SIMSLOT` 的 PBX 去电被拒绝**：Android 没有设置默认通话卡（"每次询问"）。可以在 App 里指定一张卡、
+  在 Android 的 SIM 卡设置里选一张，或者由 PBX 发送该头（见[双卡](#双卡)）。
 - **MediaTek / 传音（如 Infinix）手机上的 Shizuku 13.6.0**：App 的特权服务始终无法启动
   （`LoadedApk.makeApplicationInner` 中的 `NullPointerException`；
   [RikkaApps/Shizuku#1198](https://github.com/RikkaApps/Shizuku/issues/1198)）。请改装 Shizuku 13.5.4。
@@ -157,11 +272,26 @@ adb logcat -s VoiceSipAgent VsaPrivileged VsaTap
   并默认保持未注册。adb 方式：`adb shell monkey -p io.github.sparkcyf.voicesipagent -c android.intent.category.LAUNCHER 1`。
 - **厂商设置**：小米、POCO、Redmi 需要登录小米账号才能开启 USB 安装和 USB 调试（安全设置），HyperOS 还可能拒绝
   `pm grant`。Infinix 和 Redmi 可能禁止 `adb install`，可把 APK 拷到手机上用文件管理器安装。三星需关闭
-  **Auto Blocker**。请关闭系统自动更新：系统更新可能破坏网关依赖的隐藏 API。
+  **Auto Blocker**。请留意 Android 大版本升级可能带来的兼容性变化。
 
 ## 呼叫路由
 
 网关以 **trunk** 而不是分机的身份接入 PBX，所有路由都在 PBX 的 Inbound/Outbound Routes 中管理。
+
+```mermaid
+flowchart TB
+    caller["蜂窝网络"] <-->|"SIM 0 / SIM 1"| tap
+    subgraph phone["Android 手机"]
+        tap["通话音频截取<br/>(Shizuku, uid 2000)"] <--> bridge["呼叫桥接"] <--> ua["SIP user agent<br/>(pjsua2)"]
+    end
+    ua <-->|"SIP trunk<br/>X-VSA-SIMSLOT, X-VSA-Dial"| pbx["PBX<br/>(Asterisk / FreePBX)"]
+    pbx <--> ext["分机、软电话、IVR"]
+```
+
+<p align="center">
+  <img src="docs/images/notification.png" width="360" alt="桥接通话期间的电话应用和网关通知"><br>
+  <sub>桥接期间，系统电话应用仍显示这通蜂窝通话（主叫号码已遮挡）；网关通知显示两侧均已接通。</sub>
+</p>
 
 - **蜂窝来电**：手机发送 `INVITE sip:<target>@<domain>`，`target` 是一个 DID（默认就是 trunk 的用户名），主叫号码放在
   `P-Asserted-Identity` 中。PBX 上的 Inbound Route 按 DID 把来电送到你想要的地方。
@@ -169,6 +299,21 @@ adb logcat -s VoiceSipAgent VsaPrivileged VsaTap
   `PJSIP/$OUTNUM$@<trunk>` 即可）。蜂窝通话接通后才向 PBX 回 200 OK。
   - 中间隔着按注册表路由的代理（Flexisip 等）时，Request-URI 的用户部分必须保持为网关自己的 AoR，否则代理会按号码查注册表并返回
     404，所以号码要放进 `X-VSA-Dial`（见下方拨号方案）。
+
+### 双卡
+
+所有 SIM 卡共用一个 trunk，用 `X-VSA-SIMSLOT` 头按 Android 的**逻辑卡槽号**指定卡（0、1……，即
+`SubscriptionInfo.getSimSlotIndex()`；同一块 eSIM 芯片上同时启用的两个配置算两个卡槽）。
+`adb … --es op status` 会列出 `sims=0:<运营商>(sub<id>),1:…`。
+
+- **蜂窝来电**：INVITE 带有 `X-VSA-SIMSLOT`，值为来电所在的卡槽；需要按卡区分去向时，可在拨号方案中用
+  `${PJSIP_HEADER(read,X-VSA-SIMSLOT)}` 读取。App 里的 **Take over incoming calls on SIM n** 开关（默认全开）
+  关掉后，这张卡的来电照常在手机上响铃，例如只接管副卡。这些开关不影响去电。
+- **SIP 去电**：用 `X-VSA-SIMSLOT` 选卡。不带该头时由 App 设置 **SIM for PBX calls without X-VSA-SIMSLOT** 决定：
+  *System*（默认）跟随 Android 的默认通话卡，Android 设为"每次询问"时拒绝呼叫；*SIM n* 固定用该卡槽；*Refuse* 要求必须带头。
+  卡槽里没有启用的卡，或 Telecom 把电话放到了别的卡上，回 `480`（不会改用另一张卡）；值格式错误回 `400`。
+  网关呼叫永远不会弹出 Android 的选卡框。
+- 无论用哪张卡，同一时间只桥接一路通话。
 
 ### PBX 配置示例（FreePBX / IssabelPBX + chan_pjsip）
 
@@ -215,13 +360,25 @@ exten => _X.,n,Hangup(${HANGUPCAUSE})
 
 [vsa-android-gw-hdr]
 exten => s,1,Set(PJSIP_HEADER(add,X-VSA-Dial)=${ARG1})
+exten => s,n,ExecIf($["${ARG2}" != ""]?Set(PJSIP_HEADER(add,X-VSA-SIMSLOT)=${ARG2}))
 exten => s,n,Return()
+
+; 双卡：每个卡槽一个上下文（见上文"双卡"）
+[vsa-android-gw-out-sim0]
+exten => _X.,1,Dial(PJSIP/android-gw,,b(vsa-android-gw-hdr^s^1(${EXTEN},0)))
+exten => _X.,n,Hangup(${HANGUPCAUSE})
+
+[vsa-android-gw-out-sim1]
+exten => _X.,1,Dial(PJSIP/android-gw,,b(vsa-android-gw-hdr^s^1(${EXTEN},1)))
+exten => _X.,n,Hangup(${HANGUPCAUSE})
 ```
 
 Web 后台：
 
 - **Trunk**：Custom，拨号串 `Local/$OUTNUM$@vsa-android-gw-out`（局域网直连、没有代理时也可以直接用 `PJSIP/$OUTNUM$@android-gw`）。
 - **Outbound Route**：专用前缀（如 `9#7#`），匹配 `X.`，走上述 trunk；必须排在 `9.` 之类更宽的路由之前。
+- **双卡**：每个卡槽一个 custom trunk（`Local/$OUTNUM$@vsa-android-gw-out-sim0`、`…-sim1`），每个 trunk 一个路由前缀，
+  例如 `9#7#` → 卡槽 0，`9#6#` → 卡槽 1。
 - **Inbound Route**：DID `android-gw` → 任意目标。
 
 ### 公网接入：Flexisip
@@ -277,7 +434,7 @@ Copyright (C) 2026 sparkcyf
 
 本程序是自由软件：你可以依据自由软件基金会发布的 GNU 通用公共许可证第 2 版或（由你选择）任何更新的版本，再分发和/或修改它。详见 [LICENSE](LICENSE)（以英文原文为准）。例外：允许将本程序与任何依据 Apache License 2.0 许可的库链接，前提是其余所有代码均遵守 GPL。
 
-Release APK 静态链接了 pjsip（GPL-2.0-or-later）、OpenSSL（Apache-2.0）和 libopus（BSD-3-Clause），见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+Release APK 静态链接了 pjsip（GPL-2.0-or-later）、OpenSSL（Apache-2.0）和 libopus（BSD-3-Clause），并打包了采用 Apache 2.0 许可证的 Java/Kotlin 组件（AndroidX/Jetpack、Kotlin、kotlinx.coroutines 和 Shizuku API/provider），见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 每个 release 对应的源码是本仓库对应 tag 的提交，加上 `sip-pjsua2/native/build-pjsua2.sh` 下载的版本固定的上游源码包。
 
 ## 免责声明
