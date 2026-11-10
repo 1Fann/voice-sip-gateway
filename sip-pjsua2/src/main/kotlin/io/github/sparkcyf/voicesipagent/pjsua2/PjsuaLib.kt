@@ -43,7 +43,7 @@ internal object PjsuaLib {
     private var endpoint: Endpoint? = null
     val ep: Endpoint get() = endpoint ?: error("pjsua2 stopped")
     private var logWriter: LogWriter? = null
-    private val transports = HashMap<Pair<SipTransport, Int>, Int>()
+    private val transports = HashMap<Triple<SipTransport, Int, Boolean>, Int>()
 
     val running: Boolean get() = worker.running
 
@@ -99,27 +99,27 @@ internal object PjsuaLib {
     }
 
     /** Shared transport per type and local port; kept open so endpoint restarts can rebind instantly. */
-    fun transport(type: SipTransport, port: Int): Int = transports.getOrPut(type to port) {
+    fun transport(type: SipTransport, port: Int, ipv6: Boolean = false): Int = transports.getOrPut(Triple(type, port, ipv6)) {
         val cfg = TransportConfig()
         cfg.port = port.toLong()
         val pjType = when (type) {
-            SipTransport.UDP -> pjsip_transport_type_e.PJSIP_TRANSPORT_UDP
-            SipTransport.TCP -> pjsip_transport_type_e.PJSIP_TRANSPORT_TCP
+            SipTransport.UDP -> if (ipv6) pjsip_transport_type_e.PJSIP_TRANSPORT_UDP6 else pjsip_transport_type_e.PJSIP_TRANSPORT_UDP
+            SipTransport.TCP -> if (ipv6) pjsip_transport_type_e.PJSIP_TRANSPORT_TCP6 else pjsip_transport_type_e.PJSIP_TRANSPORT_TCP
             SipTransport.TLS -> {
                 cfg.tlsConfig.apply {
                     caBuf = systemCaPem()
                     verifyServer = true
                     proto = (pj_ssl_sock_proto.PJ_SSL_SOCK_PROTO_TLS1_2 or pj_ssl_sock_proto.PJ_SSL_SOCK_PROTO_TLS1_3).toLong()
                 }
-                pjsip_transport_type_e.PJSIP_TRANSPORT_TLS
+                if (ipv6) pjsip_transport_type_e.PJSIP_TRANSPORT_TLS6 else pjsip_transport_type_e.PJSIP_TRANSPORT_TLS
             }
         }
         ep.transportCreate(pjType, cfg).also { cfg.delete() }
     }
 
     /** Graceful: pjsua destroys the socket once pending transactions (e.g. the unregister) finish. */
-    fun closeTransport(type: SipTransport, port: Int) {
-        val id = transports.remove(type to port) ?: return
+    fun closeTransport(type: SipTransport, port: Int, ipv6: Boolean = false) {
+        val id = transports.remove(Triple(type, port, ipv6)) ?: return
         try {
             ep.transportClose(id)
         } catch (e: Exception) {

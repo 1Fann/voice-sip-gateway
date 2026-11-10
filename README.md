@@ -1,12 +1,16 @@
 # Voice SIP 网关 / Voice SIP Gateway
 
-**版本：0.3.5-custom.5** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+**版本：0.3.5-custom.7** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
 
 首次授权向导，检测 SIM 账户/空白信息；Health 提供明确的启用和授权入口；Shizuku 有界重试及助手恢复。保留默认卡/按次选卡、号码拨出和原生音频功能。
 
 [English](README.en.md) · [下载 APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [上游](https://github.com/sparkcyf/android-voice-sip-agent)
 
-基于官方 Voice SIP Agent **v0.3.5** 的非官方定制版本。当前版本 **0.3.5-custom.5**（versionCode8），支持每通电话指定 SIM。`custom` 表示通用定制，替代原本易产生歧义的 `mtk` 版本后缀；这不是联发科专属音频优化。
+基于官方 Voice SIP Agent **v0.3.5** 的非官方定制版本。当前版本 **0.3.5-custom.7**（versionCode10），支持每通电话指定 SIM。`custom` 表示通用定制，替代原本易产生歧义的 `mtk` 版本后缀；这不是联发科专属音频优化。
+
+## 本次更新 0.3.5-custom.7
+
+加入 IPv6 SIP/RTP、域名刷新与切网恢复；蜂窝来电通过实际 Telecom 账户识别 SIM，并传递给 PBX。配套通讯互联 0.9.8 可显示短信设置中的手机名和卡名。保留原签名升级链和 custom.5 功能。[IPv6 说明](docs/ipv6-domain.md) · [来电线路集成](docs/incoming-line.md)
 
 ## 本次更新 0.3.5-custom.5
 

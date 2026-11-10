@@ -20,3 +20,15 @@ internal fun selectedSimAccount(context: Context, telecom: TelecomManager, telep
     }
     return accounts.singleOrNull() ?: error("SIM phone account unavailable or ambiguous")
 }
+
+/** Incoming calls resolve their actual Telecom account, never the default outgoing SIM. */
+internal fun incomingSimSlot(context: Context, telecom: TelecomManager, telephony: TelephonyManager,
+    handle: PhoneAccountHandle?): Int? = runCatching {
+    if (handle == null) return@runCatching null
+    if (telecom.getPhoneAccount(handle)?.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) != true)
+        return@runCatching null
+    val subId = telephony.createForPhoneAccountHandle(handle)?.subscriptionId ?: return@runCatching null
+    val info = context.getSystemService(SubscriptionManager::class.java)
+        .getActiveSubscriptionInfo(subId) ?: return@runCatching null
+    (info.simSlotIndex + 1).takeIf { it in 1..2 }
+}.getOrNull()

@@ -224,7 +224,8 @@ class CellularEndpoint(
                     reconcileCalls(); reportCalls()
                     return
                 }
-                val leg = CellularLeg("c${ids.getAndIncrement()}", LegDirection.INBOUND, Party(number.ifEmpty { null }, details.callerDisplayName), null, this, main)
+                val leg = CellularLeg("c${ids.getAndIncrement()}", LegDirection.INBOUND, Party(number.ifEmpty { null }, details.callerDisplayName,
+                    simSlot = incomingSimSlot(app, telecom, telephony, details.accountHandle)), null, this, main)
                 legs[call] = leg
                 leg.bind(call)
                 log("incoming cellular call ${redactNumber(number)} -> gateway (leg ${leg.id})")

@@ -52,4 +52,26 @@ class SimAccountsTest {
         ready(); `when`(telecom.callCapablePhoneAccounts).thenReturn(listOf(handle, handle))
         assertThrows(IllegalStateException::class.java) { selectedSimAccount(context, telecom, telephony, 2) }
     }
+    @Test fun incomingSlotUsesActualAccountNotDefaultOutgoingSim() {
+        ready()
+        `when`(subscriptions.getActiveSubscriptionInfo(47)).thenReturn(info)
+        `when`(info.simSlotIndex).thenReturn(1)
+        assertEquals(2, incomingSimSlot(context,telecom,telephony,handle))
+        verify(telecom, never()).getDefaultOutgoingPhoneAccount(anyString())
+    }
+    @Test fun incomingUnknownOrInactiveAccountDoesNotGuessSlot() {
+        ready()
+        assertNull(incomingSimSlot(context,telecom,telephony,null))
+        assertNull(incomingSimSlot(context,telecom,telephony,handle))
+        `when`(subscriptions.getActiveSubscriptionInfo(47)).thenReturn(info)
+        `when`(info.simSlotIndex).thenReturn(-1)
+        assertNull(incomingSimSlot(context,telecom,telephony,handle))
+    }
+    @Test fun incomingNonCellularAndDeniedAccessDoNotGuessSlot() {
+        ready()
+        `when`(account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)).thenReturn(false)
+        assertNull(incomingSimSlot(context,telecom,telephony,handle))
+        `when`(account.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)).thenThrow(SecurityException())
+        assertNull(incomingSimSlot(context,telecom,telephony,handle))
+    }
 }

@@ -1,12 +1,16 @@
 # Voice SIP Gateway
 
-**Version: 0.3.5-custom.5** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
+**Version: 0.3.5-custom.7** — [新手机部署与权限说明 / New-phone setup](NEW-PHONE-SETUP.md)
 
 First-run permission onboarding, SIM-account/empty-data diagnostics, accessible Health actions, bounded Shizuku binding retries and assistant recovery. Existing SIM selection and native audio are retained.
 
 [中文](README.md) · [Download APK](https://github.com/1Fann/voice-sip-gateway/releases/latest) · [Upstream](https://github.com/sparkcyf/android-voice-sip-agent)
 
-Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.5**, versionCode8. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+Unofficial fork of upstream **v0.3.5**, version **0.3.5-custom.7**, versionCode10. The neutral custom suffix replaces the former mtk label; no MediaTek-specific native audio optimization is claimed.
+
+## Update 0.3.5-custom.7
+
+Adds IPv6 SIP/RTP, registrar DNS refresh, network-change recovery and incoming SIM metadata resolved from the actual Telecom account. Pair with CommLink 0.9.8 for configured phone/SIM aliases. Retains the signing identity and custom.5 behavior. [IPv6 deployment](docs/ipv6-domain.md) · [Incoming line integration](docs/incoming-line.md)
 
 ## Update 0.3.5-custom.5
 

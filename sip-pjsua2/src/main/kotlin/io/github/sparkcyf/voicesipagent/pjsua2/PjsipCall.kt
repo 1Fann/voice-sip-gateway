@@ -58,6 +58,9 @@ internal class PjsipCall(
         caller.number?.let { n ->
             prm.txOption.headers.add(SipHeader().apply { hName = "P-Asserted-Identity"; hValue = "<${owner.uriFor(n)}>" })
         }
+        caller.simSlot?.takeIf { it in 1..2 }?.let { slot ->
+            prm.txOption.headers.add(SipHeader().apply { hName = "X-VSA-SIM"; hValue = slot.toString() })
+        }
         try {
             c.makeCall(owner.uriFor(target), prm)
         } catch (e: Exception) {

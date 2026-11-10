@@ -809,10 +809,11 @@ class GatewayRuntime private constructor(context: Context) {
         val cm = app.getSystemService(ConnectivityManager::class.java)
         val callback = object : ConnectivityManager.NetworkCallback() {
             private var lastAddrs: String? = null
+            private var lastNetwork: Network? = null
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
                 if (networkCallback !== this) return
                 val addrs = lp.linkAddresses.joinToString { it.address.hostAddress.orEmpty() }
-                if (addrs != lastAddrs) {
+                if (addrs != lastAddrs || network != lastNetwork) {
                     if (lastAddrs != null) {
                         AppLog.i("network addresses changed; re-registering")
                         worker.execute {
@@ -820,6 +821,7 @@ class GatewayRuntime private constructor(context: Context) {
                         }
                     }
                     lastAddrs = addrs
+                    lastNetwork = network
                 }
             }
         }

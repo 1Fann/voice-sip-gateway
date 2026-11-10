@@ -16,6 +16,7 @@ import org.pjsip.pjsua2.CallOpParam
 import org.pjsip.pjsua2.OnIncomingCallParam
 import org.pjsip.pjsua2.OnRegStateParam
 import org.pjsip.pjsua2.pjmedia_srtp_use
+import org.pjsip.pjsua2.pjsua_ipv6_use
 import java.net.InetAddress
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
@@ -48,18 +49,20 @@ class PjsipEndpoint(
         private set
     internal val calls = HashMap<Int, PjsipCall>()
     private var serverAddrs: Set<InetAddress> = emptySet()
+    private var ipv6Transport = false
     private var rtpCheck: ScheduledFuture<*>? = null
     @Volatile private var stopped = false
     private val workerFailed = AtomicBoolean()
     private val failureListener: (Throwable) -> Unit = ::onWorkerFailure
     private var unregistered = false
 
-    private val hostPort = if (config.port == config.transport.defaultPort) config.server else "${config.server}:${config.port}"
+    private val serverHost: String = SipAddressing.uriHost(config.server)
+    private val hostPort: String = if (config.port == config.transport.defaultPort) serverHost else "$serverHost:${config.port}"
     private val transportParam = if (config.transport == SipTransport.UDP) "" else ";transport=${config.transport.id}"
     /** Over TCP/TLS, or when the domain is not the server, every request goes through the server as proxy. */
     private val useProxy = config.transport != SipTransport.UDP || config.domain != config.server
     /** URIs use the domain; when that is the server itself (and no proxy is used), keep its port too. */
-    private val uriHost = if (config.domain == config.server && !useProxy) hostPort else config.domain
+    private val uriHost: String = if (config.domain == config.server && !useProxy) hostPort else SipAddressing.uriHost(config.domain)
     internal val aor = "sip:${config.username}@$uriHost"
     internal fun uriFor(user: String) = "sip:$user@$uriHost"
 
@@ -81,7 +84,7 @@ class PjsipEndpoint(
                     PjsuaLib.removeFailureListener(failureListener)
                     return@execute
                 }
-                val addrs = runCatching { InetAddress.getAllByName(config.server).toSet() }
+                val addrs = runCatching { InetAddress.getAllByName(config.server.removeSurrounding("[", "]")).toSet() }
                     .onFailure { log.warn("cannot resolve ${config.server}: ${it.message}") }
                     .getOrDefault(emptySet())
                 if (stopped || workerFailed.get()) {
@@ -139,7 +142,7 @@ class PjsipEndpoint(
                         runCatching { acc.delete() }.onFailure { log.warn("account deletion failed", it) }
                     } finally { account = null }
                 }
-                if (releaseTransport) runCatching { PjsuaLib.closeTransport(config.transport, config.localPort) }
+                if (releaseTransport) runCatching { PjsuaLib.closeTransport(config.transport, config.localPort, ipv6Transport) }
                     .onFailure { log.warn("transport cleanup failed", it) }
             } finally {
                 PjsuaLib.removeFailureListener(failureListener)
@@ -176,14 +179,26 @@ class PjsipEndpoint(
 
     /** Network changed: pjsua rebinds, re-registers and re-INVITEs active calls with the new address. */
     fun refreshRegistration() {
-        if (!stopped && PjsuaLib.running) PjsuaLib.handleIpChange()
+        if (stopped || !PjsuaLib.running) return
+        startup.execute {
+            val addresses = runCatching { InetAddress.getAllByName(config.server.removeSurrounding("[", "]")).toSet() }
+                .onFailure { log.warn("DNS refresh failed; native registration will retry", it) }.getOrNull()
+            PjsuaLib.tryPost {
+                if (!stopped && !workerFailed.get()) {
+                    if (!addresses.isNullOrEmpty()) serverAddrs = addresses
+                    PjsuaLib.handleIpChange()
+                }
+            }
+        }
     }
 
     private fun createAccount() {
         if (config.transport != SipTransport.TLS && config.srtp != SrtpPolicy.OFF) {
             log.info("SRTP ${config.srtp.id} ignored: needs TLS signalling, using plain RTP")
         }
-        val tid = PjsuaLib.transport(config.transport, config.localPort)
+        ipv6Transport = SipAddressing.useIpv6(serverAddrs)
+        val ipv6Policy = if (ipv6Transport) pjsua_ipv6_use.PJSUA_IPV6_ENABLED_USE_IPV6_ONLY else pjsua_ipv6_use.PJSUA_IPV6_DISABLED
+        val tid = PjsuaLib.transport(config.transport, config.localPort, ipv6Transport)
         val ac = AccountConfig()
         ac.idUri = aor
         ac.regConfig.apply {
@@ -193,6 +208,7 @@ class PjsipEndpoint(
             firstRetryIntervalSec = 5
         }
         ac.sipConfig.apply {
+            ipv6Use = ipv6Policy
             authCreds.add(AuthCredInfo("digest", "*", config.authUsername, 0, config.password))
             transportId = tid
             if (useProxy) proxies.add("sip:$hostPort$transportParam;lr")
@@ -201,6 +217,7 @@ class PjsipEndpoint(
             sipOutboundUse = 0
         }
         ac.mediaConfig.apply {
+            ipv6Use = ipv6Policy
             srtpUse = when {
                 config.transport != SipTransport.TLS -> pjmedia_srtp_use.PJMEDIA_SRTP_DISABLED
                 config.srtp == SrtpPolicy.OPTIONAL -> pjmedia_srtp_use.PJMEDIA_SRTP_OPTIONAL
