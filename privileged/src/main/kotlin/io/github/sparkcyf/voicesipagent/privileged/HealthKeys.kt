@@ -33,4 +33,8 @@ object AudioMethod {
     const val AUTO = 0
     const val OFFICIAL = 1
     const val LEGACY = 2
+    /** Opt-in, supported rooted handsets only: keep direct capture and mute the physical receiver amp. */
+    const val DIRECT_RECEIVER_MUTE = 3
+    fun captureMethod(method: Int) = if (method == DIRECT_RECEIVER_MUTE) LEGACY else method
+    fun usesRedirectMute(method: Int, backend: String) = backend.startsWith("redirection")
 }

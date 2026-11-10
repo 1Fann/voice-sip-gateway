@@ -481,6 +481,7 @@ class GatewayRuntime private constructor(context: Context) {
         val audio = when (settings.audioMethod) {
             AudioMethod.OFFICIAL -> p?.get(HealthKeys.REDIRECT_AUDIO) == true
             AudioMethod.LEGACY -> p?.get(HealthKeys.DIRECT_AUDIO) == true
+            AudioMethod.DIRECT_RECEIVER_MUTE -> Build.DEVICE == "fuxi" && p?.get(HealthKeys.DIRECT_AUDIO) == true && p?.get(HealthKeys.LOCAL_SUPPRESSION) == true
             else -> p?.get(HealthKeys.DIRECT_AUDIO) == true || p?.get(HealthKeys.REDIRECT_AUDIO) == true
         }
         val problem = when {
@@ -949,7 +950,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun applySettingsNow(new: GatewaySettings) {
-        require(new.audioMethod in 0..2 && new.callAccess in 0..2) { "unknown platform setting" }
+        require(new.audioMethod in 0..3 && new.callAccess in 0..2) { "unknown platform setting" }
         if (hasActiveWork()) {
             pendingSettings = new
             _health.update { it.copy(settingsPending = true) }
@@ -1133,6 +1134,7 @@ class GatewayRuntime private constructor(context: Context) {
 
     private fun audioMethodName(method: Int) = when (method) {
         AudioMethod.LEGACY -> "direct"
+        AudioMethod.DIRECT_RECEIVER_MUTE -> "direct-receiver-mute"
         AudioMethod.OFFICIAL -> "redirection"
         else -> "auto"
     }

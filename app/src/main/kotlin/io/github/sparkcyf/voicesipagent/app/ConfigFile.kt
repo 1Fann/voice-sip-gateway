@@ -201,7 +201,7 @@ object ConfigFile {
         ),
         "device" to listOf(
             choice("audioMethod", { it.audioMethod }, { copy(audioMethod = it) },
-                mapOf(AudioMethod.AUTO to "auto", AudioMethod.OFFICIAL to "redirection", AudioMethod.LEGACY to "direct")),
+                mapOf(AudioMethod.AUTO to "auto", AudioMethod.OFFICIAL to "redirection", AudioMethod.LEGACY to "direct", AudioMethod.DIRECT_RECEIVER_MUTE to "directReceiverMute")),
             choice("callAccess", { it.callAccess }, { copy(callAccess = it) },
                 mapOf(CallAccess.AUTO to "auto", CallAccess.COMPANION to "companion", CallAccess.DIALER to "dialer")),
             bool("muteEarpiece", { it.muteEarpiece }, { copy(muteEarpiece = it) }),

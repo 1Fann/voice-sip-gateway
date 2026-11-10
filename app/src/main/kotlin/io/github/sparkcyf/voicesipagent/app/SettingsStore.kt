@@ -97,7 +97,7 @@ class SettingsStore(context: Context) {
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
-        audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
+        audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..3 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
         sipStack = SipStack.of(prefs.getString("sip_stack", null)) ?: SipStack.PJSUA2,
         defaultSimSlot = prefs.getInt("default_sim_slot", DefaultSim.SYSTEM).takeIf(DefaultSim::isValid) ?: DefaultSim.SYSTEM,

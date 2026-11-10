@@ -37,6 +37,13 @@ class ConfigFileTest {
         assertEquals(full.copy(takeover = true), imported.applyTo(GatewaySettings(takeover = true)))
     }
 
+    @Test fun combinedAudioStrategySurvivesConfigurationRoundTrip() {
+        val settings = full.copy(audioMethod = AudioMethod.DIRECT_RECEIVER_MUTE)
+        val exported = ConfigFile.export(settings)
+        assertEquals("directReceiverMute", JSONObject(exported).getJSONObject("device").getString("audioMethod"))
+        assertEquals(settings, ConfigFile.parse(exported).applyTo(GatewaySettings(takeover = false)))
+    }
+
     @Test fun defaultsExportSymbolicValues() {
         val routing = JSONObject(ConfigFile.export(GatewaySettings())).getJSONObject("routing")
         assertEquals("system", routing.getString("defaultSim"))

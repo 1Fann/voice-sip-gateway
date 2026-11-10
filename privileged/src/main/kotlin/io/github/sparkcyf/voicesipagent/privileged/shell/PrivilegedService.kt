@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.CallAudioStatus
@@ -29,6 +30,8 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
     private var tap: CallAudioTap? = null
     private var lastTapStats = "no tap yet"
     private var lastBackend = ""
+    private var outputMuteMethod = AudioMethod.AUTO
+    private val receiverAmpMute = ReceiverAmpMute()
     private var lastRecoveryDetail = ""
     /** Set by the app from its per-device record; applies from the next tap. */
     @Volatile private var directMuteBlocked = false
@@ -233,11 +236,15 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         closeAudioInternal()
         clients.requireLive(clientPid)
         synchronized(muteLock) {
+            receiverAmpMute.beginCall()
             localOutputMute.beginCall(if (directMuteBlocked) "it previously stopped direct capture on this device" else null)
         }
+        require(method in 0..3) { "unknown audio method" }
+        require(method != AudioMethod.DIRECT_RECEIVER_MUTE || ReceiverAmpMute.supported) { "receiver amp mute requires verified fuxi hardware and root Shizuku" }
         lastRecoveryDetail = ""
+        outputMuteMethod = method
         val owner = Any()
-        val t = CallAudioTap(shellCtx, method, sampleRate, TapHooks(owner))
+        val t = CallAudioTap(shellCtx, AudioMethod.captureMethod(method), sampleRate, TapHooks(owner))
         // Register before starting the worker threads so a tap that closes during open cannot later
         // acquire a mute lease. setLocalOutputMuted is serialized with open/close on the service.
         synchronized(muteLock) { muteTapOwner = owner }
@@ -267,7 +274,7 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         // Also retries a restore that failed in the tap callback, or after an earlier close.
         restoreLocal("tap closed")
         clients.resourcesHeld(synchronized(muteLock) {
-            localOutputMute.ownsOutputChange || localOutputMute.restorationPending
+            localOutputMute.ownsOutputChange || localOutputMute.restorationPending || receiverAmpMute.ownsOutputChange
         })
     }
 
@@ -284,12 +291,12 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
                 CallAudioStatus(
                     active = tap?.isOpen == true,
                     backend = tap?.usedMethod ?: lastBackend,
-                    muteRequested = localOutputMute.requested,
-                    outputMute = localOutputMute.observedMute(),
-                    muteDetail = localOutputMute.lastMuteResult,
-                    ownsOutputChange = localOutputMute.ownsOutputChange,
-                    restorationPending = localOutputMute.restorationPending,
-                    restoreDetail = localOutputMute.lastRestoreResult,
+                    muteRequested = localOutputMute.requested || receiverAmpMute.requested,
+                    outputMute = if (outputMuteMethod == AudioMethod.DIRECT_RECEIVER_MUTE) receiverAmpMute.observedMute() else localOutputMute.observedMute(),
+                    muteDetail = if (outputMuteMethod == AudioMethod.DIRECT_RECEIVER_MUTE) receiverAmpMute.lastMuteResult else localOutputMute.lastMuteResult,
+                    ownsOutputChange = localOutputMute.ownsOutputChange || receiverAmpMute.ownsOutputChange,
+                    restorationPending = localOutputMute.restorationPending || receiverAmpMute.restorationPending,
+                    restoreDetail = if (outputMuteMethod == AudioMethod.DIRECT_RECEIVER_MUTE) receiverAmpMute.lastRestoreResult else localOutputMute.lastRestoreResult,
                     voiceCallStreamMuted = runCatching {
                         audioManager.isStreamMute(AudioManager.STREAM_VOICE_CALL)
                     }.getOrNull(),
@@ -329,9 +336,10 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
 
     private fun muteFor(usedMethod: String): String {
         if (!clients.isLive) return "client disconnected"
-        // Redirected taps keep working when mode 5 tears down the handset patches. Direct telephony
-        // taps need IN_CALL to remain active, so silence only their voice-call output stream.
-        return localOutputMute.mute(Build.VERSION.SDK_INT >= 33 && usedMethod.startsWith("redirection"))
+        if (outputMuteMethod == AudioMethod.DIRECT_RECEIVER_MUTE) {
+            return receiverAmpMute.mute().also { Log.i(TAG, "local mute: $it") }
+        }
+        return localOutputMute.mute(Build.VERSION.SDK_INT >= 33 && AudioMethod.usesRedirectMute(outputMuteMethod, usedMethod))
             .also { Log.i(TAG, "local mute: $it") }
     }
 
@@ -353,7 +361,7 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
         override fun afterBackendSwitch(usedMethod: String) {
             asHelper {
                 synchronized(muteLock) {
-                    if (muteTapOwner === owner && localOutputMute.requested) muteFor(usedMethod)
+                    if (muteTapOwner === owner && (localOutputMute.requested || receiverAmpMute.requested)) muteFor(usedMethod)
                 }
             }
         }
@@ -373,7 +381,9 @@ class PrivilegedService(context: Context) : IPrivilegedService.Stub() {
     // Tap callbacks may run inside an app's Binder transaction. Always restore as the helper UID.
     private fun restoreLocal(why: String): String = asHelper {
         synchronized(muteLock) {
-            localOutputMute.restore(why).also {
+            val receiverResult = receiverAmpMute.restore(why)
+            val standardResult = localOutputMute.restore(why)
+            (if (receiverResult != "not muted") receiverResult else standardResult).also {
                 if (it != "not muted") Log.i(TAG, "local mute: $it")
             }
         }

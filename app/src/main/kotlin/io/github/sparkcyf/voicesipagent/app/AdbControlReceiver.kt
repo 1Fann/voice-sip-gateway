@@ -168,7 +168,7 @@ class AdbControlReceiver : BroadcastReceiver() {
                 val callAccess = intent.argument<Int>("call_access")
                 val holdSip = intent.argument<Boolean>("hold_sip")
                 if (port != null && port !in 1..65535) invalid("port must be 1..65535")
-                if (audioMethod != null && audioMethod !in 0..2) invalid("audio_method must be 0|1|2")
+                if (audioMethod != null && audioMethod !in 0..3) invalid("audio_method must be 0|1|2|3")
                 if (callAccess != null && callAccess !in 0..2) invalid("call_access must be 0|1|2")
                 val action: (GatewayRuntime) -> (() -> String) = { rt ->
                     rt.applySettings { cur ->

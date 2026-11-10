@@ -42,7 +42,7 @@ class AdbControlReceiverTest {
         val invalidProvisionArgs = listOf(
             mapOf("port" to 0), mapOf("port" to 65536), mapOf("port" to "5060"),
             mapOf("transport" to "test-secret"), mapOf("srtp" to "test-secret"),
-            mapOf("audio_method" to -1), mapOf("audio_method" to 3),
+            mapOf("audio_method" to -1), mapOf("audio_method" to 4),
             mapOf("call_access" to -1), mapOf("call_access" to 3),
             mapOf("password" to 123),
             mapOf("hold_sip" to "false"), mapOf("passwrod" to "test-secret"),

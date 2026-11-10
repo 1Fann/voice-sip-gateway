@@ -356,14 +356,15 @@ private fun Screen(rt: GatewayRuntime, editor: SipSettingsDraft, modifier: Modif
                 Text("手动选择电话应用不会改变网关开关。上方选择默认电话模式后，将在下次启用网关时生效。",
                     style = MaterialTheme.typography.bodySmall)
                 val preferredAudioMethod = pendingSettings?.audioMethod ?: cur.audioMethod
-                Choice("手机通话音频方式", listOf(AudioMethod.AUTO, AudioMethod.LEGACY, AudioMethod.OFFICIAL), preferredAudioMethod,
-                    { when (it) { AudioMethod.AUTO -> "自动选择"; AudioMethod.LEGACY -> "直接读取通话音频"; else -> "系统通话音频重定向" } },
-                    enabled = { it != AudioMethod.OFFICIAL || Build.VERSION.SDK_INT >= 33 }) {
+                Choice("手机通话音频方式", listOf(AudioMethod.AUTO, AudioMethod.LEGACY, AudioMethod.OFFICIAL, AudioMethod.DIRECT_RECEIVER_MUTE), preferredAudioMethod,
+                    { when (it) { AudioMethod.AUTO -> "自动选择"; AudioMethod.LEGACY -> "直接读取通话音频"; AudioMethod.DIRECT_RECEIVER_MUTE -> "直接音频＋听筒功放静音（Root）"; else -> "系统通话音频重定向" } },
+                    enabled = { (it != AudioMethod.OFFICIAL || Build.VERSION.SDK_INT >= 33) && (it != AudioMethod.DIRECT_RECEIVER_MUTE || Build.DEVICE == "fuxi") }) {
                     rt.applySettings { current -> current.copy(audioMethod = it) }
                 }
                 Text(when (preferredAudioMethod) {
                     AudioMethod.AUTO -> "优先使用系统音频重定向，准备失败时尝试直接读取通话音频。"
                     AudioMethod.LEGACY -> "直接采集和播放手机通话音频，不自动切换到重定向方式。"
+                    AudioMethod.DIRECT_RECEIVER_MUTE -> "使用直接通话音频，单独关闭听筒功放。仅适用于已验证的小米 13（fuxi），需 Root 模式 Shizuku；不会静音蓝牙、耳机或其他输出。挂断后自动恢复。"
                     else -> "仅使用系统通话音频重定向，需要 Android 13 或更新版本及相应权限。"
                 } + " 修改从下一通电话生效。", style = MaterialTheme.typography.bodySmall)
                 if (preferredAudioMethod != cur.audioMethod) {
