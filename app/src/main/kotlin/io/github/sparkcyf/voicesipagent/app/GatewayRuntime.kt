@@ -226,6 +226,7 @@ class GatewayRuntime private constructor(context: Context) {
             worker.execute {
                 syncForegroundService()
                 if (!cellular.hasCalls && _health.value.session == null) applyDeferredChanges()
+                else if (cellular.hasWaitingInbound && sipHeld != null) applySipHold()
             }
         }
         AppLog.i("runtime starting ($settings)")
@@ -591,9 +592,14 @@ class GatewayRuntime private constructor(context: Context) {
 
     /** Calls and bridge sessions keep the current registration; call-end handling re-evaluates. */
     private fun applySipHold() {
-        if (!gatewayEnabled || hasActiveWork()) return
+        if (!gatewayEnabled) return
         val reason = sipHoldReason(checkCellular().problem)
         if ((reason != null) == (sipHeld != null)) return
+        // A still-ringing, unclaimed call can benefit from initial registration.
+        // Keep the existing hold during any owned call or bridge session.
+        val initialRegistrationForRing = reason == null && sipHeld != null && sip == null &&
+            cellular.hasWaitingInbound && bridge?.session == null && _health.value.session == null
+        if (hasActiveWork() && !initialRegistrationForRing) return
         AppLog.i(if (reason != null) "unregistering SIP: $reason" else "cellular side ready; registering SIP")
         startSip()
         // The echo test bridge does not use SIP; keep it and any session it carries.

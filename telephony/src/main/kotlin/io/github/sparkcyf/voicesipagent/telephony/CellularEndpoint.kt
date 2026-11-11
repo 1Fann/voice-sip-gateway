@@ -62,6 +62,8 @@ class CellularEndpoint(
     /** Legs we own, keyed by Telecom call. Main thread only. */
     private val legs = HashMap<Call, CellularLeg>()
     private val observed = LinkedHashMap<Call, Call.Callback>()
+    private val offeredInbound = HashSet<Call>()
+    @Volatile var hasWaitingInbound = false; private set
     private val mute = MuteLease<CellularLeg, GatewayInCallService>(
         { it.microphoneMuted }, { svc, value -> svc.setMuted(value) })
     @Volatile private var closed = false
@@ -94,7 +96,8 @@ class CellularEndpoint(
         if (s == status) return
         status = s
         statusListeners.forEach { it.onStatusChanged(this, s) }
-        if (!ready) main.post {
+        if (ready) main.post { reconcileCalls(); reportCalls() }
+        else main.post {
             if (!status.ready) (legs.values + pending.map { it.leg }).distinct().forEach {
                 it.abortAudio("gateway unavailable: $detail")
             }
@@ -103,6 +106,7 @@ class CellularEndpoint(
 
     override fun setIncomingCallHandler(handler: IncomingCallHandler?) {
         this.handler = handler
+        if (handler != null) main.post { reconcileCalls(); reportCalls() }
     }
 
     override fun addStatusListener(listener: EndpointStatusListener) {
@@ -232,28 +236,7 @@ class CellularEndpoint(
                 if (!match.leg.stopping) legs[call] = match.leg
                 match.leg.bind(call)
             }
-            Call.Details.DIRECTION_INCOMING -> {
-                val h = handler
-                val slot = sims.slotOf(details.accountHandle)
-                if (!takesInbound(slot)) {
-                    log("leaving incoming call ${redactNumber(number)} on slot ${slot ?: "?"} to the phone app: not taken over")
-                    reconcileCalls(); reportCalls()
-                    return
-                }
-                if (h == null || !status.ready || call.telecomState != Call.STATE_RINGING || legs.isNotEmpty() ||
-                    pending.isNotEmpty() || hasForeignCall(except = call) || !isCellular(call) ||
-                    (number.isNotEmpty() && isEmergencyNumber(number))) {
-                    log("leaving incoming call ${redactNumber(number)} to the phone app")
-                    reconcileCalls(); reportCalls()
-                    return
-                }
-                val leg = CellularLeg("c${ids.getAndIncrement()}", LegDirection.INBOUND,
-                    Party(number.ifEmpty { null }, details.callerDisplayName, simSlot = slot?.takeIf { it in 0..1 }?.plus(1)), null, slot, this, main)
-                legs[call] = leg
-                leg.bind(call)
-                log("incoming cellular call ${redactNumber(number)} on slot ${slot ?: "?"} -> gateway (leg ${leg.id})")
-                h.onIncomingCall(leg)
-            }
+            Call.Details.DIRECTION_INCOMING -> Unit // Reconcile below, and again when readiness changes.
             else -> log("ignoring call with unknown direction")
         }
         reconcileCalls(); reportCalls()
@@ -268,6 +251,7 @@ class CellularEndpoint(
     internal fun onCallRemoved(source: GatewayInCallService, call: Call) {
         if (source !== service) return
         observed.remove(call)?.let { runCatching { call.unregisterCallback(it) } }
+        offeredInbound.remove(call)
         legs.remove(call)?.onRemoved()
         reportCalls()
     }
@@ -308,6 +292,32 @@ class CellularEndpoint(
         mute.release(leg)
     }
 
+    private fun waitingInbound(): Call? {
+        if (closed || service == null || legs.isNotEmpty() || pending.isNotEmpty()) return null
+        val call = observed.keys.singleOrNull { it.telecomState != Call.STATE_DISCONNECTED } ?: return null
+        if (call in offeredInbound || call.telecomState != Call.STATE_RINGING ||
+            call.details.callDirection != Call.Details.DIRECTION_INCOMING || !isCellular(call) ||
+            !takesInbound(sims.slotOf(call.details.accountHandle))) return null
+        val number = call.details.handle?.schemeSpecificPart.orEmpty()
+        return call.takeUnless { number.isNotEmpty() && isEmergencyNumber(number) }
+    }
+
+    private fun offerWaitingInbound() {
+        val incoming = handler ?: return
+        if (!status.ready) return
+        val call = waitingInbound() ?: return
+        val details = call.details
+        val slot = sims.slotOf(details.accountHandle)
+        val number = details.handle?.schemeSpecificPart.orEmpty()
+        val leg = CellularLeg("c${ids.getAndIncrement()}", LegDirection.INBOUND,
+            Party(number.ifEmpty { null }, details.callerDisplayName, simSlot = slot?.takeIf { it in 0..1 }?.plus(1)), null, slot, this, main)
+        offeredInbound.add(call)
+        legs[call] = leg
+        leg.bind(call)
+        log("incoming cellular call ${redactNumber(number)} on slot ${slot ?: "?"} -> gateway (leg ${leg.id})")
+        incoming.onIncomingCall(leg)
+    }
+
     private fun reconcileCalls() {
         if (observed.keys.count { it.telecomState != Call.STATE_DISCONNECTED } > 1) {
             legs.values.toList().forEach { it.abortAudio("additional call makes telephony routing unsafe") }
@@ -315,6 +325,7 @@ class CellularEndpoint(
         legs.values.toList().filter { it.call?.let(::isCellular) != true }.forEach {
             it.abortAudio("call is outside the cellular gateway scope")
         }
+        offerWaitingInbound()
     }
 
     private fun isCellular(call: Call): Boolean {
@@ -335,6 +346,7 @@ class CellularEndpoint(
         legs.clear()
         observed.forEach { (call, callback) -> runCatching { call.unregisterCallback(callback) } }
         observed.clear()
+        offeredInbound.clear()
         // Retain cancelled placement matches until their existing timeout or a late call report.
         reportCalls()
     }
@@ -342,6 +354,7 @@ class CellularEndpoint(
     private fun reportCalls() {
         val live = observed.keys.filter { it.telecomState != Call.STATE_DISCONNECTED }
         hasCalls = live.isNotEmpty() || pending.isNotEmpty()
+        hasWaitingInbound = waitingInbound() != null
         onCallsChanged?.invoke(CallSnapshot(live.size, live.any { it.telecomState == Call.STATE_RINGING },
             live.count { it in legs }, if (live.isEmpty()) "No cellular call" else
                 live.joinToString { if (it in legs) "Gateway call: ${stateLabel(it.telecomState)}" else "Other call: ${stateLabel(it.telecomState)}" }))
